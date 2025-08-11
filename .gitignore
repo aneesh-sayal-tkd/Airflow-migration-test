@@ -1,0 +1,4 @@
+venv/
+configs/config.json
+src/utils/__pycache__*
+src/airflow/__pycache__*

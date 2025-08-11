@@ -1,0 +1,13 @@
+databricks-sql-connector~=3.5.0
+boto3
+hvac
+databricks-sdk~=0.39.0
+requests
+httpx
+fastapi
+uvicorn
+python-dotenv
+pyyaml
+PyJWT~=2.4.0
+cryptography
+watchtower
