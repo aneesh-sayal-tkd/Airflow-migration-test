@@ -24,7 +24,7 @@ from airflow.AirflowUtils import create_variable
 
 
 # ---- Configuration ----
-MWAA_ENVIRONMENT_NAME = ""  # Put your MWAA environment name here
+MWAA_ENVIRONMENT_NAME = "MWAA1USVGA10612D1023"  # Put your MWAA environment name here
 
 
 def test_prerequisites():

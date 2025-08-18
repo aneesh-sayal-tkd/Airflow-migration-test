@@ -221,3 +221,84 @@ def create_variable(
             "error": str(ex)
         }
 
+def create_connection(
+    connection_id: str,
+    conn_type: str,
+    description: str,
+    host: str,
+    login: str,
+    password: str,
+    schema: str,
+    port: int,
+    extra: str,
+    environment: str,
+    region: str,
+    airflow_environment_name: str
+) -> dict:
+    """
+    Create or update a connection in MWAA via Airflow REST API with explicit parameters.
+
+    Args:
+        connection_id: Connection ID
+        conn_type: Connection type (e.g., 'postgres')
+        description: Description of the connection
+        host: Hostname
+        login: Username
+        password: Password
+        schema: Database/schema
+        port: Port number
+        extra: Extra JSON string for additional params
+        environment: Deployment environment (e.g., 'dev', 'prd')
+        region: AWS region (e.g., 'us-east-1')
+        airflow_environment_name: MWAA environment name
+
+    Returns:
+        dict with 'status', 'result', and 'error'
+    """
+    payload = {
+        "connection_id": connection_id,
+        "conn_type": conn_type,
+        "description": description,
+        "host": host,
+        "login": login,
+        "password": password,
+        "schema": schema,
+        "port": port,
+        "extra": extra
+    }
+
+    try:
+        mwaa_client = CommonUtils.get_boto3_client(
+            AirflowUtilsConstants.MWAA_KEY, environment, region
+        )
+
+        request_params = {
+            "Name": airflow_environment_name,
+            "Path": "/connections",
+            "Method": "POST",
+            "Body": payload
+        }
+
+        print(f"Sending create connection request with payload: {payload}")
+
+        response = mwaa_client.invoke_rest_api(**request_params)
+
+        http_status = response.get('ResponseMetadata', {}).get('HTTPStatusCode', 'Unknown')
+        print(f"HTTP response code: {http_status}")
+
+        resp_body = response.get("ResponseBody")
+        content = None
+        if resp_body:
+            content = resp_body.read().decode("utf-8")
+            print(f"Response body: {content}")
+
+        if http_status == 200:
+            print("✅ Connection created or updated successfully.")
+            return {"status": "success", "result": content, "error": None}
+        else:
+            print("❌ Failed to create or update connection.")
+            return {"status": "failed", "result": content, "error": f"HTTP {http_status}"}
+
+    except Exception as e:
+        print(f"❌ Exception during creating connection: {e}")
+        return {"status": "failed", "result": None, "error": str(e)}
