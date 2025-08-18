@@ -160,343 +160,64 @@ def list_all_mwaa_environments(environment: str, region: str) -> Dict[str, Any]:
         }
 
 
-def get_environment_variables(environment: str, region: str, airflow_environment_name: str) -> Dict[str, Any]:
+def create_variable(
+    key: str,
+    value: str,
+    environment: str,
+    region: str,
+    airflow_environment_name: str
+) -> dict:
     """
-    Get all variables from a specific MWAA environment using REST API
-    
-    Args:
-        environment (str): Target environment (dev/tst/prd)
-        region (str): Target region (us/eu/jp)
-        airflow_environment_name (str): Name of the MWAA environment
-    
-    Returns:
-        dict: Response with variables information
+    Create or update a variable in an MWAA environment via the REST API.
+    Prints result to the terminal.
     """
     try:
-        print(f"Getting variables for MWAA environment: {airflow_environment_name}")
-        
-        # Validate inputs
-        if environment not in AirflowUtilsConstants.VALID_ENVIRONMENTS:
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-                "error": f"Invalid environment: {environment}"
-            }
-        
-        if region not in AirflowUtilsConstants.VALID_REGIONS:
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-                "error": f"Invalid region: {region}"
-            }
-        
-        # Get MWAA client
         mwaa_client = CommonUtils.get_boto3_client(
-            AirflowUtilsConstants.MWAA_KEY, 
-            environment, 
-            region
+            AirflowUtilsConstants.MWAA_KEY, environment, region
         )
-        
-        # Use MWAA REST API to get variables
-        request_params = {
-            AirflowUtilsConstants.NAME_KEY: airflow_environment_name,
-            "Path": AirflowUtilsConstants.VARIABLES_PATH,
-            "Method": AirflowUtilsConstants.GET_METHOD
-        }
-        
-        print(f"Invoking REST API with params: {request_params}")
-        response = mwaa_client.invoke_rest_api(**request_params)
-        
-        # Parse the response
-        if response.get('ResponseBody'):
-            response_data = json.loads(response['ResponseBody'].read().decode('utf-8'))
-            print(f"API Response: {response_data}")
-            
-            variables_list = []
-            
-            # Handle different response formats
-            if isinstance(response_data, dict):
-                # Check for variables key
-                if AirflowUtilsConstants.VARIABLES_RESPONSE_KEY in response_data:
-                    variables_data = response_data[AirflowUtilsConstants.VARIABLES_RESPONSE_KEY]
-                    
-                    if isinstance(variables_data, list):
-                        variables_list = variables_data
-                    elif isinstance(variables_data, dict):
-                        # Convert dict to list format
-                        variables_list = [
-                            {
-                                AirflowUtilsConstants.VARIABLE_KEY_KEY: key,
-                                AirflowUtilsConstants.VARIABLE_VALUE_KEY: value
-                            }
-                            for key, value in variables_data.items()
-                        ]
-                # Check if response_data itself contains variables directly
-                elif isinstance(response_data, dict) and all(isinstance(v, (str, int, float, bool)) for v in response_data.values()):
-                    variables_list = [
-                        {
-                            AirflowUtilsConstants.VARIABLE_KEY_KEY: key,
-                            AirflowUtilsConstants.VARIABLE_VALUE_KEY: value
-                        }
-                        for key, value in response_data.items()
-                    ]
-            
-            result = {
-                "environment_name": airflow_environment_name,
-                "variables": variables_list,
-                "variables_count": len(variables_list),
-                "region": AirflowUtilsConstants.REGION_DETAILS[region]["region_name"],
-                "target_environment": environment,
-                "raw_response": response_data  # Include for debugging
-            }
-            
-            print(f"Successfully retrieved {len(variables_list)} variables")
-            
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.SUCCESS_KEY,
-                CommonUtilsConstants.RESULT_KEY: result
-            }
-        else:
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-                "error": "No response body received from MWAA API"
-            }
-        
-    except ClientError as e:
-        error_message = f"AWS Client Error while getting variables: {str(e)}"
-        print(error_message)
-        
-        return {
-            CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-            "error": error_message
-        }
-        
-    except Exception as e:
-        error_message = f"Error while getting variables: {str(e)}"
-        print(error_message)
-        print(traceback.format_exc())
-        
-        return {
-            CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-            "error": error_message
-        }
-    
-
-def get_variable(environment, region, airflow_environment_name):
-    """
-    Simple function to get variables from MWAA environment
-    Returns the raw response for debugging
-    """
-    try:
-        mwaa_client = CommonUtils.get_boto3_client(AirflowUtilsConstants.MWAA_KEY, environment, region)
-
         request_params = {
             "Name": airflow_environment_name,
             "Path": "/variables",
-            "Method": "GET",
+            "Method": "POST",
+            "Body": {
+                "key": key,
+                "value": value,
+            }
         }
-        
-        print(f"Making API call with params: {request_params}")
+        print(f"Creating variable with params: {request_params}")
+
         response = mwaa_client.invoke_rest_api(**request_params)
-        
-        print(f"Response keys: {list(response.keys()) if response else 'No response'}")
-        print(f"Response metadata: {response.get('ResponseMetadata', {})}")
-        
-        # Check if we have a response body
-        if response.get('ResponseBody'):
+        http_status = response.get('ResponseMetadata', {}).get('HTTPStatusCode', 'Unknown')
+        print(f"HTTP Status: {http_status}")
+
+        resp_body = response.get("ResponseBody")
+        if resp_body:
             try:
-                content = response['ResponseBody'].read().decode('utf-8')
-                print(f"Response body content: '{content}'")
-                print(f"Content length: {len(content)}")
-                print("Airflow REST API successful, variable retrieved")
-                return response, content
-            except Exception as read_error:
-                print(f"Error reading response body: {read_error}")
-                return response, None
+                content = resp_body.read().decode("utf-8")
+                print(f"Response Body: {content}")
+            except Exception as e:
+                print(f"Could not read response body: {e}")
+                content = None
         else:
-            print("No ResponseBody in response")
-            return response, None
-            
-    except ClientError as e:
-        print(f"InvokeRestApi failed: {e.response}")
-        raise
+            content = None
+            print("No response body from API.")
+
+        if http_status == 200:
+            print("✅ Variable created/updated successfully.")
+        else:
+            print("❌ Failed to create/update variable.")
+
+        return {
+            "status": "success" if http_status == 200 else "failed",
+            "result": content,
+            "error": None if http_status == 200 else f"API returned status {http_status}"
+        }
+
     except Exception as ex:
-        status_message = f"Unable to get variable from airflow env: {str(ex)}"
-        print(status_message)
-        raise Exception(status_message)
-
-
-def get_environment_connections(environment: str, region: str, airflow_environment_name: str) -> Dict[str, Any]:
-    """
-    Get all connections from a specific MWAA environment using REST API
-    
-    Args:
-        environment (str): Target environment (dev/tst/prd)
-        region (str): Target region (us/eu/jp)
-        airflow_environment_name (str): Name of the MWAA environment
-    
-    Returns:
-        dict: Response with connections information
-    """
-    try:
-        print(f"Getting connections for MWAA environment: {airflow_environment_name}")
-        
-        # Validate inputs
-        if environment not in AirflowUtilsConstants.VALID_ENVIRONMENTS:
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-                "error": f"Invalid environment: {environment}"
-            }
-        
-        if region not in AirflowUtilsConstants.VALID_REGIONS:
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-                "error": f"Invalid region: {region}"
-            }
-        
-        # Get MWAA client
-        mwaa_client = CommonUtils.get_boto3_client(
-            AirflowUtilsConstants.MWAA_KEY, 
-            environment, 
-            region
-        )
-        
-        # Use MWAA REST API to get connections
-        request_params = {
-            AirflowUtilsConstants.NAME_KEY: airflow_environment_name,
-            "Path": AirflowUtilsConstants.CONNECTIONS_PATH,
-            "Method": AirflowUtilsConstants.GET_METHOD
-        }
-        
-        print(f"Invoking REST API with params: {request_params}")
-        response = mwaa_client.invoke_rest_api(**request_params)
-        
-        # Parse the response
-        if response.get('ResponseBody'):
-            response_data = json.loads(response['ResponseBody'].read().decode('utf-8'))
-            print(f"API Response: {response_data}")
-            
-            connections_list = []
-            
-            if isinstance(response_data, dict) and AirflowUtilsConstants.CONNECTIONS_RESPONSE_KEY in response_data:
-                connections_data = response_data[AirflowUtilsConstants.CONNECTIONS_RESPONSE_KEY]
-                
-                if isinstance(connections_data, list):
-                    for conn in connections_data:
-                        connection_info = {
-                            AirflowUtilsConstants.CONNECTION_ID_KEY: conn.get(AirflowUtilsConstants.CONNECTION_ID_KEY),
-                            AirflowUtilsConstants.CONNECTION_TYPE_KEY: conn.get(AirflowUtilsConstants.CONNECTION_TYPE_KEY),
-                            AirflowUtilsConstants.DESCRIPTION_KEY: conn.get(AirflowUtilsConstants.DESCRIPTION_KEY),
-                            AirflowUtilsConstants.HOST_KEY: conn.get(AirflowUtilsConstants.HOST_KEY),
-                            AirflowUtilsConstants.LOGIN_KEY: conn.get(AirflowUtilsConstants.LOGIN_KEY),
-                            AirflowUtilsConstants.SCHEMA_KEY: conn.get(AirflowUtilsConstants.SCHEMA_KEY),
-                            AirflowUtilsConstants.PORT_KEY: conn.get(AirflowUtilsConstants.PORT_KEY),
-                            AirflowUtilsConstants.EXTRA_KEY: conn.get(AirflowUtilsConstants.EXTRA_KEY),
-                            "is_encrypted": conn.get("is_encrypted"),
-                            "is_extra_encrypted": conn.get("is_extra_encrypted")
-                        }
-                        connections_list.append(connection_info)
-            
-            result = {
-                "environment_name": airflow_environment_name,
-                "connections": connections_list,
-                "connections_count": len(connections_list),
-                "region": AirflowUtilsConstants.REGION_DETAILS[region]["region_name"],
-                "target_environment": environment,
-                "raw_response": response_data  # Include for debugging
-            }
-            
-            print(f"Successfully retrieved {len(connections_list)} connections")
-            
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.SUCCESS_KEY,
-                CommonUtilsConstants.RESULT_KEY: result
-            }
-        else:
-            return {
-                CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-                "error": "No response body received from MWAA API"
-            }
-        
-    except ClientError as e:
-        error_message = f"AWS Client Error while getting connections: {str(e)}"
-        print(error_message)
-        
+        print(f"❌ Unable to create variable in Airflow: {ex}")
         return {
-            CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-            "error": error_message
-        }
-        
-    except Exception as e:
-        error_message = f"Error while getting connections: {str(e)}"
-        print(error_message)
-        print(traceback.format_exc())
-        
-        return {
-            CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-            "error": error_message
+            "status": "failed",
+            "result": None,
+            "error": str(ex)
         }
 
-
-def get_environment_summary_by_region(environment: str, region: str) -> Dict[str, Any]:
-    """
-    Get a summary of MWAA environments with region-specific network details
-    
-    Args:
-        environment (str): Target environment (dev/tst/prd)
-        region (str): Target region (us/eu/jp)
-    
-    Returns:
-        dict: Response with environment summary and region configuration
-    """
-    try:
-        print(f"Getting environment summary for region: {region}, environment: {environment}")
-        
-        # Get basic environment list first
-        envs_result = list_all_mwaa_environments(environment, region)
-        
-        if envs_result[CommonUtilsConstants.STATUS_KEY] != CommonUtilsConstants.SUCCESS_KEY:
-            return envs_result
-        
-        environments = envs_result[CommonUtilsConstants.RESULT_KEY]["environments"]
-        
-        # Add region-specific information
-        region_config = AirflowUtilsConstants.REGION_DETAILS.get(region, {})
-        network_config = region_config.get("network_configuration", {}).get(environment, {})
-        
-        summary = {
-            "region_info": {
-                "region_code": region,
-                "region_name": region_config.get("region_name"),
-                "location_char": region_config.get("location_char"),
-                "network_configuration": network_config
-            },
-            "environment_summary": {
-                "total_environments": len(environments),
-                "available_environments": len([env for env in environments if env.get("status") == AirflowUtilsConstants.AIRFLOW_STATUS_AVAILABLE_KEY]),
-                "creating_environments": len([env for env in environments if env.get("status") == AirflowUtilsConstants.STATUS_CREATING]),
-                "failed_environments": len([env for env in environments if env.get("status") == AirflowUtilsConstants.AIRFLOW_STATUS_FAILED_KEY])
-            },
-            "environments": [
-                {
-                    "name": env.get("name"),
-                    "status": env.get("status"),
-                    "environment_class": env.get("environment_class"),
-                    "airflow_version": env.get("airflow_version"),
-                    "webserver_url": env.get("webserver_url")
-                }
-                for env in environments
-            ]
-        }
-        
-        return {
-            CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.SUCCESS_KEY,
-            CommonUtilsConstants.RESULT_KEY: summary
-        }
-        
-    except Exception as e:
-        error_message = f"Error while getting environment summary: {str(e)}"
-        print(error_message)
-        
-        return {
-            CommonUtilsConstants.STATUS_KEY: CommonUtilsConstants.FAILED_KEY,
-            "error": error_message
-        }
