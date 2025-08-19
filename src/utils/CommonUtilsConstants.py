@@ -325,4 +325,3 @@ OKTA_JWKS_URL = f"{OKTA_ISSUER}/v1/keys"
 
 TEC_ACCOUNT_KEY = "tec_account_id"
 
-FAST_API_X_API_KEY = "9ddecdb5-1812-4832-bd8b-fccf11ec909e-7b9e9149-30e7-4695-851b-787ff0c2b03d"
