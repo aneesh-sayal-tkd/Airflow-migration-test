@@ -1,0 +1,61 @@
+name: Trigger Harness Pipeline on PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - test
+      - prod
+
+jobs:
+  trigger-harness-pipeline:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event.pull_request.head.ref == 'dev' && github.event.pull_request.base.ref == 'test') ||
+      (github.event.pull_request.head.ref == 'test' && github.event.pull_request.base.ref == 'prod')
+    
+    steps:
+      - name: Determine Migration Type
+        id: migration-type
+        run: |
+          if [[ "${{ github.event.pull_request.head.ref }}" == "dev" && "${{ github.event.pull_request.base.ref }}" == "test" ]]; then
+            echo "source_env=dev" >> $GITHUB_OUTPUT
+            echo "target_env=test" >> $GITHUB_OUTPUT
+            echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+            echo "mwaa_env=${{ vars.TST_MWAA_ENV }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
+            echo "source_env=test" >> $GITHUB_OUTPUT
+            echo "target_env=prod" >> $GITHUB_OUTPUT
+            echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+            echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger Harness Pipeline
+        run: |
+          curl -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "application": "${{ github.repository }}",
+              "branch": "${{ github.event.pull_request.head.ref }}",
+              "target_branch": "${{ github.event.pull_request.base.ref }}",
+              "pr_number": "${{ github.event.number }}",
+              "pr_title": "${{ github.event.pull_request.title }}",
+              "migration_type": "${{ steps.migration-type.outputs.migration_type }}",
+              "source_environment": "${{ steps.migration-type.outputs.source_env }}",
+              "target_environment": "${{ steps.migration-type.outputs.target_env }}",
+              "mwaa_environment": "${{ steps.migration-type.outputs.mwaa_env }}",
+              "triggered_by": "${{ github.actor }}",
+              "commit_sha": "${{ github.event.pull_request.head.sha }}",
+              "repository_url": "${{ github.event.repository.html_url }}"
+            }'
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 Harness pipeline triggered for **${{ steps.migration-type.outputs.migration_type }}** migration\n\n**Details:**\n- Source Environment: \`${{ steps.migration-type.outputs.source_env }}\`\n- Target Environment: \`${{ steps.migration-type.outputs.target_env }}\`\n- MWAA Environment: \`${{ steps.migration-type.outputs.mwaa_env }}\`\n- Migration Type: \`${{ steps.migration-type.outputs.migration_type }}\``
+            })
