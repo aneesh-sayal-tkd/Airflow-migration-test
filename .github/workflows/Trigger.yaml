@@ -7,11 +7,13 @@ on:
       - test
       - prod
 
-# Add explicit permissions
+# Explicit permissions - this is crucial
 permissions:
   contents: read
   pull-requests: write
   issues: write
+  actions: read
+  checks: read
 
 jobs:
   trigger-harness-pipeline:
@@ -28,7 +30,7 @@ jobs:
             echo "source_env=dev" >> $GITHUB_OUTPUT
             echo "target_env=test" >> $GITHUB_OUTPUT
             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.TST_MWAA_ENV }}" >> $GITHUB_OUTPUT
+            echo "mwaa_env=${{ vars.test_mwaa }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
             echo "source_env=test" >> $GITHUB_OUTPUT
             echo "target_env=prod" >> $GITHUB_OUTPUT
@@ -60,11 +62,12 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `🚀 Harness pipeline triggered for **${{ steps.migration-type.outputs.migration_type }}** migration
+            try {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `🚀 Harness pipeline triggered for **${{ steps.migration-type.outputs.migration_type }}** migration
 
 **Details:**
 - Source Environment: \`${{ steps.migration-type.outputs.source_env }}\`
@@ -73,4 +76,9 @@ jobs:
 - Migration Type: \`${{ steps.migration-type.outputs.migration_type }}\`
 
 Pipeline triggered by: @${{ github.actor }}`
-            })
+              });
+              console.log('✅ Comment posted successfully');
+            } catch (error) {
+              console.error('❌ Failed to post comment:', error.message);
+              // Don't fail the entire workflow if comment fails
+            }
