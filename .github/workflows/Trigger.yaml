@@ -22,7 +22,7 @@ jobs:
             echo "source_env=dev" >> $GITHUB_OUTPUT
             echo "target_env=test" >> $GITHUB_OUTPUT
             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.TST_MWAA_ENV }}" >> $GITHUB_OUTPUT
+            echo "mwaa_env=${{ vars.test_mwaa }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
             echo "source_env=test" >> $GITHUB_OUTPUT
             echo "target_env=prod" >> $GITHUB_OUTPUT
