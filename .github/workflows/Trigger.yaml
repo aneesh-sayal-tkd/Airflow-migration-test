@@ -7,6 +7,12 @@ on:
       - test
       - prod
 
+# Add explicit permissions
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
@@ -22,7 +28,7 @@ jobs:
             echo "source_env=dev" >> $GITHUB_OUTPUT
             echo "target_env=test" >> $GITHUB_OUTPUT
             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.test_mwaa }}" >> $GITHUB_OUTPUT
+            echo "mwaa_env=${{ vars.TST_MWAA_ENV }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
             echo "source_env=test" >> $GITHUB_OUTPUT
             echo "target_env=prod" >> $GITHUB_OUTPUT
@@ -52,10 +58,19 @@ jobs:
       - name: Comment on PR
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `🚀 Harness pipeline triggered for **${{ steps.migration-type.outputs.migration_type }}** migration\n\n**Details:**\n- Source Environment: \`${{ steps.migration-type.outputs.source_env }}\`\n- Target Environment: \`${{ steps.migration-type.outputs.target_env }}\`\n- MWAA Environment: \`${{ steps.migration-type.outputs.mwaa_env }}\`\n- Migration Type: \`${{ steps.migration-type.outputs.migration_type }}\``
+              body: `🚀 Harness pipeline triggered for **${{ steps.migration-type.outputs.migration_type }}** migration
+
+**Details:**
+- Source Environment: \`${{ steps.migration-type.outputs.source_env }}\`
+- Target Environment: \`${{ steps.migration-type.outputs.target_env }}\`
+- MWAA Environment: \`${{ steps.migration-type.outputs.mwaa_env }}\`
+- Migration Type: \`${{ steps.migration-type.outputs.migration_type }}\`
+
+Pipeline triggered by: @${{ github.actor }}`
             })
