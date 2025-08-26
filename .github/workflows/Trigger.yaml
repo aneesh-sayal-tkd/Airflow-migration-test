@@ -7,13 +7,10 @@ on:
       - test
       - prod
 
-# Explicit permissions - this is crucial
 permissions:
   contents: read
   pull-requests: write
   issues: write
-  actions: read
-  checks: read
 
 jobs:
   trigger-harness-pipeline:
@@ -23,50 +20,98 @@ jobs:
       (github.event.pull_request.head.ref == 'test' && github.event.pull_request.base.ref == 'prod')
     
     steps:
-      - name: Determine Migration Type
-        id: migration-type
+      - name: Determine Migration Type and MWAA Environment
+        id: migration-config
         run: |
           if [[ "${{ github.event.pull_request.head.ref }}" == "dev" && "${{ github.event.pull_request.base.ref }}" == "test" ]]; then
             echo "source_env=dev" >> $GITHUB_OUTPUT
             echo "target_env=test" >> $GITHUB_OUTPUT
             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.test_mwaa }}" >> $GITHUB_OUTPUT
+            echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
+            echo "deployment_stage=test" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
             echo "source_env=test" >> $GITHUB_OUTPUT
             echo "target_env=prod" >> $GITHUB_OUTPUT
             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+            echo "deployment_stage=prod" >> $GITHUB_OUTPUT
           fi
 
-      - name: Trigger Harness Pipeline
+      - name: Trigger Harness Pipeline Webhook
         run: |
-          curl -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+          echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }} migration"
+          
+          response=$(curl -w "%{http_code}" -s -o /tmp/webhook_response.json -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
+            -H "User-Agent: GitHub-Actions/${{ github.run_id }}" \
+            -H "X-GitHub-Event: pull_request" \
+            --max-time 30 \
+            --retry 2 \
+            --retry-delay 5 \
             -d '{
-              "application": "${{ github.repository }}",
-              "branch": "${{ github.event.pull_request.head.ref }}",
-              "target_branch": "${{ github.event.pull_request.base.ref }}",
-              "pr_number": "${{ github.event.number }}",
-              "pr_title": "${{ github.event.pull_request.title }}",
-              "migration_type": "${{ steps.migration-type.outputs.migration_type }}",
-              "source_environment": "${{ steps.migration-type.outputs.source_env }}",
-              "target_environment": "${{ steps.migration-type.outputs.target_env }}",
-              "mwaa_environment": "${{ steps.migration-type.outputs.mwaa_env }}",
-              "triggered_by": "${{ github.actor }}",
-              "commit_sha": "${{ github.event.pull_request.head.sha }}",
-              "repository_url": "${{ github.event.repository.html_url }}"
-            }'
+              "source": "github-actions",
+              "event_type": "pull_request",
+              "repository": {
+                "name": "${{ github.event.repository.name }}",
+                "full_name": "${{ github.repository }}",
+                "url": "${{ github.event.repository.html_url }}"
+              },
+              "pull_request": {
+                "number": ${{ github.event.number }},
+                "title": "${{ github.event.pull_request.title }}",
+                "html_url": "${{ github.event.pull_request.html_url }}",
+                "head": {
+                  "ref": "${{ github.event.pull_request.head.ref }}",
+                  "sha": "${{ github.event.pull_request.head.sha }}"
+                },
+                "base": {
+                  "ref": "${{ github.event.pull_request.base.ref }}"
+                }
+              },
+              "migration": {
+                "type": "${{ steps.migration-config.outputs.migration_type }}",
+                "source_environment": "${{ steps.migration-config.outputs.source_env }}",
+                "target_environment": "${{ steps.migration-config.outputs.target_env }}",
+                "deployment_stage": "${{ steps.migration-config.outputs.deployment_stage }}",
+                "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}"
+              },
+              "trigger_info": {
+                "triggered_by": "${{ github.actor }}",
+                "github_run_id": "${{ github.run_id }}",
+                "github_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              }
+            }')
+          
+          if [[ "$response" =~ ^2[0-9][0-9]$ ]]; then
+            echo "✅ Webhook triggered successfully (HTTP $response)"
+            cat /tmp/webhook_response.json 2>/dev/null || echo "Response body not available"
+          else
+            echo "❌ Webhook failed with HTTP status: $response"
+            cat /tmp/webhook_response.json 2>/dev/null || echo "Error response not available"
+            exit 1
+          fi
 
-**Details:**
-- Source Environment: \`${{ steps.migration-type.outputs.source_env }}\`
-- Target Environment: \`${{ steps.migration-type.outputs.target_env }}\`
-- MWAA Environment: \`${{ steps.migration-type.outputs.mwaa_env }}\`
-- Migration Type: \`${{ steps.migration-type.outputs.migration_type }}\`
+      - name: Log Migration Details
+        run: |
+          echo "📋 Migration Summary:"
+          echo "- Migration Type: ${{ steps.migration-config.outputs.migration_type }}"
+          echo "- Source Environment: ${{ steps.migration-config.outputs.source_env }}"
+          echo "- Target Environment: ${{ steps.migration-config.outputs.target_env }}"
+          echo "- MWAA Environment: ${{ steps.migration-config.outputs.mwaa_env }}"
+          echo "- Deployment Stage: ${{ steps.migration-config.outputs.deployment_stage }}"
+          echo "- Triggered by: ${{ github.actor }}"
+          echo "- PR: #${{ github.event.number }} - ${{ github.event.pull_request.title }}"
 
-Pipeline triggered by: @${{ github.actor }}`
-              });
-              console.log('✅ Comment posted successfully');
-            } catch (error) {
-              console.error('❌ Failed to post comment:', error.message);
-              // Don't fail the entire workflow if comment fails
-            }
+      - name: Comment on PR (Optional)
+        if: success()
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+            -d '{
+              "body": "🚀 **Harness Pipeline Triggered**\n\n**Migration Details:**\n- Type: `${{ steps.migration-config.outputs.migration_type }}`\n- Source: `${{ steps.migration-config.outputs.source_env }}`\n- Target: `${{ steps.migration-config.outputs.target_env }}`\n- MWAA Environment: `${{ steps.migration-config.outputs.mwaa_env }}`\n- Deployment Stage: `${{ steps.migration-config.outputs.deployment_stage }}`\n\n**Triggered by:** @${{ github.actor }}\n\n[View Action Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            }' \
+            --fail-with-body || echo "Failed to post comment, but pipeline was triggered successfully"
