@@ -276,7 +276,6 @@
 #             }'
 
 name: Branch Protection and Pipeline Trigger
-
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
@@ -292,7 +291,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+        
       - name: Validate allowed branch combinations
         run: |
           SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
@@ -326,13 +325,97 @@ jobs:
             echo "✅ CODEOWNERS file found"
           fi
 
-      - name: Verify codeowner approval requirement
+      - name: Wait for codeowner approval
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "📋 This PR requires approval from codeowners as defined in CODEOWNERS file"
-          echo "🔒 Branch protection rules should be configured to:"
-          echo "  • Require pull request reviews before merging"
-          echo "  • Require review from code owners"
-          echo "  • Restrict pushes that bypass pull request requirements"
+          echo "🔍 Checking for codeowner approval..."
+          
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          MAX_ATTEMPTS=720  # 60 minutes (720 * 5 seconds)
+          ATTEMPT=0
+          
+          check_approval() {
+            # Get PR reviews
+            REVIEWS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews")
+            
+            # Get required status checks and branch protection info
+            PROTECTION_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/branches/${{ github.event.pull_request.base.ref }}/protection" 2>/dev/null || echo '{}')
+            
+            # Check if codeowners review is required
+            REQUIRES_CODEOWNER_REVIEW=$(echo "$PROTECTION_INFO" | jq -r '.required_pull_request_reviews.require_code_owner_reviews // false')
+            
+            if [[ "$REQUIRES_CODEOWNER_REVIEW" != "true" ]]; then
+              echo "⚠️  Branch protection doesn't require codeowner review"
+              return 0
+            fi
+            
+            # Check for approved reviews from codeowners
+            APPROVED_BY_CODEOWNERS=$(echo "$REVIEWS" | jq -r '
+              map(select(.state == "APPROVED")) | 
+              length > 0
+            ')
+            
+            # Also check if all required reviews are satisfied
+            PR_STATUS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER")
+            
+            MERGEABLE_STATE=$(echo "$PR_STATUS" | jq -r '.mergeable_state')
+            
+            echo "📊 PR Status: $MERGEABLE_STATE"
+            
+            if [[ "$MERGEABLE_STATE" == "clean" ]] || [[ "$MERGEABLE_STATE" == "unstable" && "$APPROVED_BY_CODEOWNERS" == "true" ]]; then
+              echo "✅ All required approvals received!"
+              return 0
+            elif [[ "$MERGEABLE_STATE" == "blocked" ]]; then
+              echo "🔒 PR is blocked - missing required approvals"
+              return 1
+            else
+              echo "⏳ PR status: $MERGEABLE_STATE - continuing to wait..."
+              return 1
+            fi
+          }
+          
+          echo "🕐 Waiting for codeowner approval (checking every 5 seconds, max 60 minutes)..."
+          
+          while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+            if check_approval; then
+              echo "🎉 Codeowner approval confirmed! Proceeding with merge validation."
+              break
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+            MINUTES_ELAPSED=$(( (ATTEMPT * 5) / 60 ))
+            SECONDS_ELAPSED=$(( (ATTEMPT * 5) % 60 ))
+            
+            if [[ $SECONDS_ELAPSED -eq 0 ]]; then
+              echo "⏱️  Still waiting... (${MINUTES_ELAPSED}m elapsed)"
+            fi
+            
+            if [[ $ATTEMPT -eq $MAX_ATTEMPTS ]]; then
+              echo "❌ Timeout: No codeowner approval received after 60 minutes"
+              echo "📋 Please ensure:"
+              echo "  • All required reviewers have approved the PR"
+              echo "  • Branch protection rules are properly configured"
+              echo "  • CODEOWNERS file is correctly set up"
+              exit 1
+            fi
+            
+            sleep 5
+          done
+
+      - name: Final validation
+        run: |
+          echo "✅ All validations passed!"
+          echo "🔒 Branch protection rules have been satisfied"
+          echo "👥 Required codeowner approvals received"
+          echo "🚀 PR is ready for merge"
 
   # Job 2: Trigger Harness pipeline after successful merge
   trigger-harness-pipeline:
@@ -344,7 +427,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+        
       - name: Determine migration configuration
         id: migration-config
         run: |
@@ -362,14 +445,14 @@ jobs:
           
           echo "🎯 Target branch: $BRANCH_NAME"
           echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
-
+          
       - name: Get commit details
         id: commit-info
         run: |
           echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
           echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
           echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
-
+          
       - name: Trigger Harness Pipeline
         run: |
           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
@@ -408,15 +491,10 @@ jobs:
             echo "📋 Response: $RESPONSE_BODY"
             exit 1
           fi
-
+          
       - name: Post-deployment notification
         if: success()
         run: |
           echo "🎉 Pipeline triggered successfully!"
           echo "🔗 Monitor the deployment in Harness dashboard"
           echo "📊 Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-
-
-
-
