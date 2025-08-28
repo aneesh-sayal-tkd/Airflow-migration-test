@@ -275,235 +275,387 @@
 #               "body": "❌ **Failed to Trigger Harness Pipeline**\n\n**Migration:** `${{ steps.migration-config.outputs.migration_type }}`\n**Error:** ${{ steps.trigger-pipeline.outputs.failure_reason }}\n\n❗ Please check the webhook configuration and pipeline setup before retrying."
 #             }'
 
+# name: Branch Protection and Pipeline Trigger
+# on:
+#   pull_request:
+#     types: [opened, synchronize, ready_for_review]
+#     branches: [test, prod]
+#   push:
+#     branches: [test, prod]
+
+# permissions:
+#   contents: write
+#   pull-requests: write
+#   checks: read
+#   statuses: read
+
+# jobs:
+#   # Job 1: Validate PR and check approval status
+#   validate-pr:
+#     runs-on: ubuntu-latest
+#     if: github.event_name == 'pull_request'
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+        
+#       - name: Validate allowed branch combinations
+#         run: |
+#           SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
+#           TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          
+#           echo "🔍 Validating PR from $SOURCE_BRANCH to $TARGET_BRANCH"
+          
+#           if [[ "$SOURCE_BRANCH" == "dev" && "$TARGET_BRANCH" == "test" ]]; then
+#             echo "✅ Valid PR: dev → test"
+#           elif [[ "$SOURCE_BRANCH" == "test" && "$TARGET_BRANCH" == "prod" ]]; then
+#             echo "✅ Valid PR: test → prod"
+#           else
+#             echo "❌ Invalid branch combination!"
+#             echo "Only the following PR combinations are allowed:"
+#             echo "  • dev → test"
+#             echo "  • test → prod"
+#             exit 1
+#           fi
+
+#       - name: Check CODEOWNERS file
+#         run: |
+#           if [[ ! -f ".github/CODEOWNERS" && ! -f "CODEOWNERS" && ! -f "docs/CODEOWNERS" ]]; then
+#             echo "⚠️  Warning: No CODEOWNERS file found!"
+#           else
+#             echo "✅ CODEOWNERS file found"
+#           fi
+
+#       - name: Wait for codeowner approval and validate merge readiness
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         run: |
+#           echo "🔍 Checking merge readiness..."
+          
+#           PR_NUMBER="${{ github.event.pull_request.number }}"
+#           REPO="${{ github.repository }}"
+#           MAX_ATTEMPTS=360  # 30 minutes
+#           ATTEMPT=0
+          
+#           check_merge_status() {
+#             # Get PR detailed status
+#             PR_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#               -H "Accept: application/vnd.github.v3+json" \
+#               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER")
+            
+#             MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable // false')
+#             MERGEABLE_STATE=$(echo "$PR_DATA" | jq -r '.mergeable_state // "unknown"')
+            
+#             # Get reviews
+#             REVIEWS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#               -H "Accept: application/vnd.github.v3+json" \
+#               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews")
+            
+#             # Check for any approved review (since only owner approval is needed)
+#             HAS_APPROVAL=$(echo "$REVIEWS" | jq -r 'map(select(.state == "APPROVED")) | length > 0')
+            
+#             echo "📊 Merge Status:"
+#             echo "  - Mergeable: $MERGEABLE"
+#             echo "  - State: $MERGEABLE_STATE"
+#             echo "  - Has Approval: $HAS_APPROVAL"
+            
+#             # Check if merge is ready
+#             if [[ "$HAS_APPROVAL" == "true" && "$MERGEABLE" == "true" ]]; then
+#               case "$MERGEABLE_STATE" in
+#                 "clean"|"unstable")
+#                   echo "✅ PR is ready to merge!"
+#                   return 0
+#                   ;;
+#                 "blocked")
+#                   echo "🔒 PR is still blocked - checking specific issues..."
+#                   # Get status checks
+#                   STATUS_CHECKS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#                     -H "Accept: application/vnd.github.v3+json" \
+#                     "https://api.github.com/repos/$REPO/commits/${{ github.event.pull_request.head.sha }}/status")
+                  
+#                   COMBINED_STATUS=$(echo "$STATUS_CHECKS" | jq -r '.state // "unknown"')
+#                   echo "  - Combined Status: $COMBINED_STATUS"
+                  
+#                   if [[ "$COMBINED_STATUS" == "success" || "$COMBINED_STATUS" == "pending" ]]; then
+#                     echo "✅ Status checks are passing - PR should be mergeable soon"
+#                     return 0
+#                   fi
+#                   return 1
+#                   ;;
+#                 *)
+#                   echo "⏳ Waiting for merge state to stabilize..."
+#                   return 1
+#                   ;;
+#               esac
+#             elif [[ "$HAS_APPROVAL" != "true" ]]; then
+#               echo "⏳ Still waiting for codeowner approval..."
+#               return 1
+#             else
+#               echo "⏳ Approval received, waiting for merge conflicts to resolve..."
+#               return 1
+#             fi
+#           }
+          
+#           while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+#             if check_merge_status; then
+#               echo "🎉 PR validation complete - ready for merge!"
+#               break
+#             fi
+            
+#             ATTEMPT=$((ATTEMPT + 1))
+#             MINUTES_ELAPSED=$(( (ATTEMPT * 5) / 60 ))
+            
+#             if [[ $(( ATTEMPT % 12 )) -eq 0 ]]; then  # Every minute
+#               echo "⏱️  Still checking... (${MINUTES_ELAPSED}m elapsed)"
+#             fi
+            
+#             if [[ $ATTEMPT -eq $MAX_ATTEMPTS ]]; then
+#               echo "❌ Timeout: Merge requirements not met after 30 minutes"
+#               echo "🔧 Possible solutions:"
+#               echo "  • Check if all required status checks are passing"
+#               echo "  • Ensure branch protection allows codeowner-only approval"
+#               echo "  • Verify no merge conflicts exist"
+#               echo "  • Check if bypass permissions are needed"
+#               exit 1
+#             fi
+            
+#             sleep 5
+#           done
+
+#       - name: Provide merge guidance
+#         run: |
+#           echo "✅ PR Validation Complete!"
+#           echo ""
+#           echo "🔧 If you still see 'Merging is blocked', try these solutions:"
+#           echo ""
+#           echo "**Option 1: Use Bypass Protection (Recommended)**"
+#           echo "1. Go to your PR on GitHub"
+#           echo "2. Look for 'Merge without waiting for requirements to be met'"
+#           echo "3. Check the bypass option and merge"
+#           echo ""
+#           echo "**Option 2: Update Branch Protection Settings**"
+#           echo "1. Go to Settings > Branches > Edit protection rule"
+#           echo "2. Under 'Restrict pushes that bypass pull request requirements'"
+#           echo "3. Add your username or 'github-actions[bot]' to bypass list"
+#           echo ""
+#           echo "**Option 3: Use Admin Override**"
+#           echo "1. Repository admins can always bypass protection"
+#           echo "2. Use 'Merge without waiting' option"
+#           echo ""
+#           echo "🎯 Current PR Status: Ready for merge with owner approval ✅"
+
+#   # Job 2: Trigger pipeline after successful merge
+#   trigger-harness-pipeline:
+#     runs-on: ubuntu-latest
+#     if: |
+#       github.event_name == 'push' && 
+#       (github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
+    
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+        
+#       - name: Determine migration configuration
+#         id: migration-config
+#         run: |
+#           BRANCH_NAME="${{ github.ref_name }}"
+          
+#           if [[ "$BRANCH_NAME" == "test" ]]; then
+#             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+#             echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
+#             echo "environment=test" >> $GITHUB_OUTPUT
+#           elif [[ "$BRANCH_NAME" == "prod" ]]; then
+#             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+#             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+#             echo "environment=production" >> $GITHUB_OUTPUT
+#           fi
+          
+#           echo "🎯 Target branch: $BRANCH_NAME"
+#           echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
+          
+#       - name: Get commit details
+#         id: commit-info
+#         run: |
+#           echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
+#           echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+#           echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          
+#       - name: Trigger Harness Pipeline
+#         run: |
+#           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
+          
+#           RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+#             -H "Content-Type: application/json" \
+#             -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
+#             -d '{
+#               "repository": "${{ github.repository }}",
+#               "branch": "${{ github.ref_name }}",
+#               "commit_sha": "${{ steps.commit-info.outputs.commit_sha }}",
+#               "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+#               "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+#               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
+#               "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
+#               "environment": "${{ steps.migration-config.outputs.environment }}",
+#               "triggered_by": "${{ github.actor }}"
+#             }')
+          
+#           HTTP_CODE="${RESPONSE: -3}"
+#           RESPONSE_BODY="${RESPONSE%???}"
+          
+#           if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+#             echo "✅ Successfully triggered Harness pipeline"
+#           else
+#             echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
+#             exit 1
+#           fi
+
+
+# .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
+
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review]
+    types: [opened, synchronize, ready_for_review, reopened]
     branches: [test, prod]
   push:
     branches: [test, prod]
 
-permissions:
-  contents: write
+permissions:                # needed for the polling job
+  contents: read
   pull-requests: write
-  checks: read
-  statuses: read
+  checks: write
+  statuses: write
 
 jobs:
-  # Job 1: Validate PR and check approval status
+# ----------------------------------------------------------------------
+# 1. Light validation of PR source/target + CODEOWNERS file
+#    --> reports the status-check   validate-pr
+# ----------------------------------------------------------------------
   validate-pr:
+    name: validate-pr         # ← must match status-check context
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Validate allowed branch combinations
-        run: |
-          SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
-          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
-          
-          echo "🔍 Validating PR from $SOURCE_BRANCH to $TARGET_BRANCH"
-          
-          if [[ "$SOURCE_BRANCH" == "dev" && "$TARGET_BRANCH" == "test" ]]; then
-            echo "✅ Valid PR: dev → test"
-          elif [[ "$SOURCE_BRANCH" == "test" && "$TARGET_BRANCH" == "prod" ]]; then
-            echo "✅ Valid PR: test → prod"
-          else
-            echo "❌ Invalid branch combination!"
-            echo "Only the following PR combinations are allowed:"
-            echo "  • dev → test"
-            echo "  • test → prod"
-            exit 1
-          fi
+      - uses: actions/checkout@v4
 
-      - name: Check CODEOWNERS file
+      - name: Enforce allowed branch flow (dev→test, test→prod)
         run: |
-          if [[ ! -f ".github/CODEOWNERS" && ! -f "CODEOWNERS" && ! -f "docs/CODEOWNERS" ]]; then
-            echo "⚠️  Warning: No CODEOWNERS file found!"
-          else
+          SRC="${{ github.head_ref }}"
+          DST="${{ github.base_ref }}"
+
+          case "${SRC}:${DST}" in
+            dev:test|test:prod)  echo "✅ branch flow allowed" ;;
+            *)                   echo "❌ invalid branch flow ${SRC} → ${DST}"; exit 1 ;;
+          esac
+
+      - name: Check that a CODEOWNERS file exists
+        run: |
+          if [[ -f .github/CODEOWNERS || -f CODEOWNERS || -f docs/CODEOWNERS ]]; then
             echo "✅ CODEOWNERS file found"
+          else
+            echo "❌ No CODEOWNERS file found"; exit 1
           fi
 
-      - name: Wait for codeowner approval and validate merge readiness
+# ----------------------------------------------------------------------
+# 2. Poll until a code-owner has approved the PR
+#    --> reports the status-check   codeowner-approval
+#    add this context to the protection rule instead of (or in addition to) validate-pr
+# ----------------------------------------------------------------------
+  codeowner-approval:
+    name: codeowner-approval   # ← second required status-check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: validate-pr         # stop early if validate-pr failed
+    timeout-minutes: 30
+
+    steps:
+      - name: Wait for a code-owner approval
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🔍 Checking merge readiness..."
-          
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
-          MAX_ATTEMPTS=360  # 30 minutes
-          ATTEMPT=0
-          
-          check_merge_status() {
-            # Get PR detailed status
-            PR_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER")
-            
-            MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable // false')
-            MERGEABLE_STATE=$(echo "$PR_DATA" | jq -r '.mergeable_state // "unknown"')
-            
-            # Get reviews
-            REVIEWS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews")
-            
-            # Check for any approved review (since only owner approval is needed)
-            HAS_APPROVAL=$(echo "$REVIEWS" | jq -r 'map(select(.state == "APPROVED")) | length > 0')
-            
-            echo "📊 Merge Status:"
-            echo "  - Mergeable: $MERGEABLE"
-            echo "  - State: $MERGEABLE_STATE"
-            echo "  - Has Approval: $HAS_APPROVAL"
-            
-            # Check if merge is ready
-            if [[ "$HAS_APPROVAL" == "true" && "$MERGEABLE" == "true" ]]; then
-              case "$MERGEABLE_STATE" in
-                "clean"|"unstable")
-                  echo "✅ PR is ready to merge!"
-                  return 0
-                  ;;
-                "blocked")
-                  echo "🔒 PR is still blocked - checking specific issues..."
-                  # Get status checks
-                  STATUS_CHECKS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    "https://api.github.com/repos/$REPO/commits/${{ github.event.pull_request.head.sha }}/status")
-                  
-                  COMBINED_STATUS=$(echo "$STATUS_CHECKS" | jq -r '.state // "unknown"')
-                  echo "  - Combined Status: $COMBINED_STATUS"
-                  
-                  if [[ "$COMBINED_STATUS" == "success" || "$COMBINED_STATUS" == "pending" ]]; then
-                    echo "✅ Status checks are passing - PR should be mergeable soon"
-                    return 0
-                  fi
-                  return 1
-                  ;;
-                *)
-                  echo "⏳ Waiting for merge state to stabilize..."
-                  return 1
-                  ;;
-              esac
-            elif [[ "$HAS_APPROVAL" != "true" ]]; then
-              echo "⏳ Still waiting for codeowner approval..."
-              return 1
-            else
-              echo "⏳ Approval received, waiting for merge conflicts to resolve..."
-              return 1
+
+          echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
+          for i in $(seq 1 360); do
+            # list reviews → keep last state per reviewer → filter APPROVED
+            approved=$(gh api \
+              repos/${REPO}/pulls/${PR}/reviews \
+              --jq '[group_by(.user.login)[].[-1] | select(.state=="APPROVED")] | length')
+
+            if [[ "$approved" -gt 0 ]]; then
+              echo "🎉 code-owner has approved – check succeeds"
+              exit 0
             fi
-          }
-          
-          while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
-            if check_merge_status; then
-              echo "🎉 PR validation complete - ready for merge!"
-              break
-            fi
-            
-            ATTEMPT=$((ATTEMPT + 1))
-            MINUTES_ELAPSED=$(( (ATTEMPT * 5) / 60 ))
-            
-            if [[ $(( ATTEMPT % 12 )) -eq 0 ]]; then  # Every minute
-              echo "⏱️  Still checking... (${MINUTES_ELAPSED}m elapsed)"
-            fi
-            
-            if [[ $ATTEMPT -eq $MAX_ATTEMPTS ]]; then
-              echo "❌ Timeout: Merge requirements not met after 30 minutes"
-              echo "🔧 Possible solutions:"
-              echo "  • Check if all required status checks are passing"
-              echo "  • Ensure branch protection allows codeowner-only approval"
-              echo "  • Verify no merge conflicts exist"
-              echo "  • Check if bypass permissions are needed"
-              exit 1
-            fi
-            
+
             sleep 5
           done
 
-      - name: Provide merge guidance
-        run: |
-          echo "✅ PR Validation Complete!"
-          echo ""
-          echo "🔧 If you still see 'Merging is blocked', try these solutions:"
-          echo ""
-          echo "**Option 1: Use Bypass Protection (Recommended)**"
-          echo "1. Go to your PR on GitHub"
-          echo "2. Look for 'Merge without waiting for requirements to be met'"
-          echo "3. Check the bypass option and merge"
-          echo ""
-          echo "**Option 2: Update Branch Protection Settings**"
-          echo "1. Go to Settings > Branches > Edit protection rule"
-          echo "2. Under 'Restrict pushes that bypass pull request requirements'"
-          echo "3. Add your username or 'github-actions[bot]' to bypass list"
-          echo ""
-          echo "**Option 3: Use Admin Override**"
-          echo "1. Repository admins can always bypass protection"
-          echo "2. Use 'Merge without waiting' option"
-          echo ""
-          echo "🎯 Current PR Status: Ready for merge with owner approval ✅"
+          echo "⌛ timed-out waiting for code-owner approval"
+          exit 1
 
-  # Job 2: Trigger pipeline after successful merge
+# ----------------------------------------------------------------------
+# 3. Runs only after the PR is merged into test ▸ prod branches
+# ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' && 
+    if: >
+      github.event_name == 'push' &&
       (github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+       - name: Checkout code
+         uses: actions/checkout@v4
         
-      - name: Determine migration configuration
-        id: migration-config
-        run: |
-          BRANCH_NAME="${{ github.ref_name }}"
+       - name: Determine migration configuration
+         id: migration-config
+         run: |
+           BRANCH_NAME="${{ github.ref_name }}"
+         
+           if [[ "$BRANCH_NAME" == "test" ]]; then
+             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+             echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
+             echo "environment=test" >> $GITHUB_OUTPUT
+           elif [[ "$BRANCH_NAME" == "prod" ]]; then
+             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+             echo "environment=production" >> $GITHUB_OUTPUT
+           fi
           
-          if [[ "$BRANCH_NAME" == "test" ]]; then
-            echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
-            echo "environment=test" >> $GITHUB_OUTPUT
-          elif [[ "$BRANCH_NAME" == "prod" ]]; then
-            echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
-            echo "environment=production" >> $GITHUB_OUTPUT
-          fi
+           echo "🎯 Target branch: $BRANCH_NAME"
+           echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
           
-          echo "🎯 Target branch: $BRANCH_NAME"
-          echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
+       - name: Get commit details
+         id: commit-info
+         run: |
+           echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
+           echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+           echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
           
-      - name: Get commit details
-        id: commit-info
-        run: |
-          echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
-          echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
-          echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+       - name: Trigger Harness Pipeline
+         run: |
+           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
           
-      - name: Trigger Harness Pipeline
-        run: |
-          echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
+           RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+             -H "Content-Type: application/json" \
+             -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
+             -d '{
+               "repository": "${{ github.repository }}",
+               "branch": "${{ github.ref_name }}",
+               "commit_sha": "${{ steps.commit-info.outputs.commit_sha }}",
+               "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+               "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
+               "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
+               "environment": "${{ steps.migration-config.outputs.environment }}",
+               "triggered_by": "${{ github.actor }}"
+             }')
           
-          RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
-            -d '{
-              "repository": "${{ github.repository }}",
-              "branch": "${{ github.ref_name }}",
-              "commit_sha": "${{ steps.commit-info.outputs.commit_sha }}",
-              "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
-              "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
-              "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
-              "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
-              "environment": "${{ steps.migration-config.outputs.environment }}",
-              "triggered_by": "${{ github.actor }}"
-            }')
-          
-          HTTP_CODE="${RESPONSE: -3}"
-          RESPONSE_BODY="${RESPONSE%???}"
-          
-          if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
-            echo "✅ Successfully triggered Harness pipeline"
-          else
-            echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
-            exit 1
-          fi
+           HTTP_CODE="${RESPONSE: -3}"
+           RESPONSE_BODY="${RESPONSE%???}"
+         
+           if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+             echo "✅ Successfully triggered Harness pipeline"
+           else
+             echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
+             exit 1
+           fi
