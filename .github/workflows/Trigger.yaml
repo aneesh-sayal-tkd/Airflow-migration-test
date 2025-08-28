@@ -60,221 +60,602 @@
 #             }' \
 #             --fail-with-body || echo "Comment failed but pipeline triggered"
 
-name: Trigger Harness Pipeline on PR
+# name: Trigger Harness Pipeline on PR
+
+# on:
+#   pull_request:
+#     types: [opened, synchronize, reopened]
+#     branches: [test, prod]
+
+# permissions:
+#   contents: read
+#   pull-requests: write
+#   issues: write
+
+# jobs:
+#   trigger-harness-pipeline:
+#     runs-on: ubuntu-latest
+#     if: |
+#       (github.event.pull_request.head.ref == 'dev' && github.event.pull_request.base.ref == 'test') ||
+#       (github.event.pull_request.head.ref == 'test' && github.event.pull_request.base.ref == 'prod')
+    
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+#         with:
+#           token: ${{ secrets.GITHUB_TOKEN }}
+
+#       - name: Determine Migration Type
+#         id: migration-config
+#         run: |
+#           if [[ "${{ github.event.pull_request.head.ref }}" == "dev" && "${{ github.event.pull_request.base.ref }}" == "test" ]]; then
+#             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+#             echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
+#             echo "expected_duration=480" >> $GITHUB_OUTPUT  # 8 minutes
+#           elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
+#             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+#             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+#             echo "expected_duration=600" >> $GITHUB_OUTPUT  # 10 minutes
+#           fi
+
+#       - name: Trigger Harness Pipeline
+#         id: trigger-pipeline
+#         run: |
+#           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
+#           echo "👤 Triggered by: ${{ github.actor }}"
+          
+#           # Add unique tracking identifier
+#           tracking_id="gh-${{ github.run_id }}-${{ github.run_attempt }}"
+          
+#           response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+#             -H "Content-Type: application/json" \
+#             -d "{
+#               \"repository\": \"${{ github.repository }}\",
+#               \"pr_number\": ${{ github.event.number }},
+#               \"pr_title\": \"${{ github.event.pull_request.title }}\",
+#               \"migration_type\": \"${{ steps.migration-config.outputs.migration_type }}\",
+#               \"mwaa_environment\": \"${{ steps.migration-config.outputs.mwaa_env }}\",
+#               \"triggered_by\": \"${{ github.actor }}\",
+#               \"github_user\": \"${{ github.actor }}\",
+#               \"commit_sha\": \"${{ github.event.pull_request.head.sha }}\",
+#               \"source_branch\": \"${{ github.event.pull_request.head.ref }}\",
+#               \"target_branch\": \"${{ github.event.pull_request.base.ref }}\",
+#               \"github_run_id\": \"${{ github.run_id }}\",
+#               \"tracking_id\": \"$tracking_id\"
+#             }")
+          
+#           # Extract HTTP status and response body
+#           http_status=$(echo "$response" | grep "HTTP_STATUS:" | cut -d: -f2)
+#           response_body=$(echo "$response" | sed '/HTTP_STATUS:/d')
+          
+#           echo "HTTP Status: $http_status"
+#           echo "Harness response: $response_body"
+          
+#           # Check if webhook call was successful
+#           if [[ "$http_status" -ge 400 ]]; then
+#             echo "❌ Webhook call failed with status $http_status"
+#             echo "trigger_status=failed" >> $GITHUB_OUTPUT
+#             echo "failure_reason=Webhook call failed with HTTP status $http_status" >> $GITHUB_OUTPUT
+#             exit 1
+#           fi
+          
+#           # Extract response details
+#           webhook_status=$(echo "$response_body" | jq -r '.status // "UNKNOWN"')
+#           ui_url=$(echo "$response_body" | jq -r '.data.uiUrl // .uiUrl // empty')
+          
+#           if [[ "$webhook_status" == "SUCCESS" ]]; then
+#             echo "✅ Harness webhook returned SUCCESS status"
+#             echo "trigger_status=success" >> $GITHUB_OUTPUT
+#           else
+#             echo "❌ Harness webhook returned non-SUCCESS status: $webhook_status"
+#             echo "trigger_status=failed" >> $GITHUB_OUTPUT
+#             echo "failure_reason=Webhook returned status: $webhook_status" >> $GITHUB_OUTPUT
+#           fi
+          
+#           echo "ui_url=$ui_url" >> $GITHUB_OUTPUT
+#           echo "tracking_id=$tracking_id" >> $GITHUB_OUTPUT
+#           echo "webhook_status=$webhook_status" >> $GITHUB_OUTPUT
+
+#       - name: Comment on PR - Pipeline Triggered
+#         if: steps.trigger-pipeline.outputs.trigger_status == 'success'
+#         run: |
+#           ui_url_text=""
+#           if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
+#             ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
+#           fi
+          
+#           duration_minutes=$((${{ steps.migration-config.outputs.expected_duration }} / 60))
+          
+#           curl -X POST \
+#             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+#             -H "Content-Type: application/json" \
+#             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+#             -d "{
+#               \"body\": \"🚀 **Harness Pipeline Triggered Successfully**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**MWAA Environment:** \`${{ steps.migration-config.outputs.mwaa_env }}\`\n**Triggered by:** @${{ github.actor }}\n**Tracking ID:** \`${{ steps.trigger-pipeline.outputs.tracking_id }}\`\n**Webhook Status:** \`${{ steps.trigger-pipeline.outputs.webhook_status }}\`$ui_url_text\n\n⏳ Pipeline is running. Estimated completion time: **${duration_minutes} minutes**\n\n*Will automatically proceed with merge upon completion.*\"
+#             }"
+
+#       - name: Wait for Pipeline Completion
+#         if: steps.trigger-pipeline.outputs.trigger_status == 'success'
+#         id: wait-completion
+#         run: |
+#           duration=${{ steps.migration-config.outputs.expected_duration }}
+#           duration_minutes=$((duration / 60))
+          
+#           echo "⏳ Waiting for pipeline completion..."
+#           echo "Estimated duration: $duration_minutes minutes ($duration seconds)"
+          
+#           # Progress updates every 2 minutes
+#           update_interval=120
+#           updates_count=$((duration / update_interval))
+          
+#           for ((i=1; i<=updates_count; i++)); do
+#             elapsed=$((i * update_interval))
+#             elapsed_minutes=$((elapsed / 60))
+#             remaining=$((duration - elapsed))
+#             remaining_minutes=$((remaining / 60))
+            
+#             echo "Progress: ${elapsed_minutes}/${duration_minutes} minutes elapsed, ~${remaining_minutes} minutes remaining"
+            
+#             if [[ $remaining -gt 0 ]]; then
+#               sleep $update_interval
+#             fi
+#           done
+          
+#           # Sleep any remaining time
+#           remaining=$((duration % update_interval))
+#           if [[ $remaining -gt 0 ]]; then
+#             echo "Sleeping final $remaining seconds..."
+#             sleep $remaining
+#           fi
+          
+#           echo "✅ Wait period completed - assuming pipeline finished successfully"
+#           echo "status=completed" >> $GITHUB_OUTPUT
+
+#       - name: Comment on PR - Pipeline Completed
+#         if: steps.wait-completion.outputs.status == 'completed'
+#         run: |
+#           ui_url_text=""
+#           if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
+#             ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
+#           fi
+          
+#           curl -X POST \
+#             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+#             -H "Content-Type: application/json" \
+#             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+#             -d "{
+#               \"body\": \"✅ **Harness Pipeline Completed Successfully**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**Tracking ID:** \`${{ steps.trigger-pipeline.outputs.tracking_id }}\`$ui_url_text\n\n🎉 Pipeline execution completed! Proceeding with automatic merge...\"
+#             }"
+
+#       - name: Merge Pull Request
+#         if: steps.wait-completion.outputs.status == 'completed'
+#         run: |
+#           echo "🔀 Automatically merging PR after successful pipeline execution"
+          
+#           merge_response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
+#             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+#             -H "Content-Type: application/json" \
+#             https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}/merge \
+#             -d '{
+#               "commit_title": "Merge PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}",
+#               "commit_message": "Automatically merged after successful Harness pipeline execution\n\nTracking ID: ${{ steps.trigger-pipeline.outputs.tracking_id }}\nMigration: ${{ steps.migration-config.outputs.migration_type }}",
+#               "merge_method": "merge"
+#             }')
+          
+#           merge_status=$(echo "$merge_response" | grep "HTTP_STATUS:" | cut -d: -f2)
+          
+#           if [[ "$merge_status" -eq 200 ]]; then
+#             echo "✅ PR merged successfully"
+#             curl -X POST \
+#               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+#               -H "Content-Type: application/json" \
+#               https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+#               -d '{
+#                 "body": "🎉 **PR Merged Successfully**\n\nThe pull request has been automatically merged after successful pipeline execution."
+#               }'
+#           else
+#             echo "❌ Failed to merge PR automatically (status: $merge_status)"
+#             curl -X POST \
+#               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+#               -H "Content-Type: application/json" \
+#               https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+#               -d '{
+#                 "body": "⚠️ **Auto-merge Failed**\n\nThe Harness pipeline completed successfully, but automatic merge failed. Please merge manually.\n\n**Possible reasons:**\n- Branch protection rules require reviews\n- Merge conflicts exist\n- PR is not in mergeable state"
+#               }'
+#           fi
+
+#       - name: Comment on PR - Pipeline Trigger Failed
+#         if: steps.trigger-pipeline.outputs.trigger_status == 'failed'
+#         run: |
+#           curl -X POST \
+#             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+#             -H "Content-Type: application/json" \
+#             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+#             -d '{
+#               "body": "❌ **Failed to Trigger Harness Pipeline**\n\n**Migration:** `${{ steps.migration-config.outputs.migration_type }}`\n**Error:** ${{ steps.trigger-pipeline.outputs.failure_reason }}\n\n❗ Please check the webhook configuration and pipeline setup before retrying."
+#             }'
+
+# name: Branch Protection and Pipeline Trigger
+# on:
+#   pull_request:
+#     types: [opened, synchronize, ready_for_review]
+#     branches: [test, prod]
+#   push:
+#     branches: [test, prod]
+
+# permissions:
+#   contents: write
+#   pull-requests: write
+#   checks: read
+#   statuses: read
+
+# jobs:
+#   # Job 1: Validate PR and check approval status
+#   validate-pr:
+#     runs-on: ubuntu-latest
+#     if: github.event_name == 'pull_request'
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+        
+#       - name: Validate allowed branch combinations
+#         run: |
+#           SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
+#           TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          
+#           echo "🔍 Validating PR from $SOURCE_BRANCH to $TARGET_BRANCH"
+          
+#           if [[ "$SOURCE_BRANCH" == "dev" && "$TARGET_BRANCH" == "test" ]]; then
+#             echo "✅ Valid PR: dev → test"
+#           elif [[ "$SOURCE_BRANCH" == "test" && "$TARGET_BRANCH" == "prod" ]]; then
+#             echo "✅ Valid PR: test → prod"
+#           else
+#             echo "❌ Invalid branch combination!"
+#             echo "Only the following PR combinations are allowed:"
+#             echo "  • dev → test"
+#             echo "  • test → prod"
+#             exit 1
+#           fi
+
+#       - name: Check CODEOWNERS file
+#         run: |
+#           if [[ ! -f ".github/CODEOWNERS" && ! -f "CODEOWNERS" && ! -f "docs/CODEOWNERS" ]]; then
+#             echo "⚠️  Warning: No CODEOWNERS file found!"
+#           else
+#             echo "✅ CODEOWNERS file found"
+#           fi
+
+#       - name: Wait for codeowner approval and validate merge readiness
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         run: |
+#           echo "🔍 Checking merge readiness..."
+          
+#           PR_NUMBER="${{ github.event.pull_request.number }}"
+#           REPO="${{ github.repository }}"
+#           MAX_ATTEMPTS=360  # 30 minutes
+#           ATTEMPT=0
+          
+#           check_merge_status() {
+#             # Get PR detailed status
+#             PR_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#               -H "Accept: application/vnd.github.v3+json" \
+#               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER")
+            
+#             MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable // false')
+#             MERGEABLE_STATE=$(echo "$PR_DATA" | jq -r '.mergeable_state // "unknown"')
+            
+#             # Get reviews
+#             REVIEWS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#               -H "Accept: application/vnd.github.v3+json" \
+#               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews")
+            
+#             # Check for any approved review (since only owner approval is needed)
+#             HAS_APPROVAL=$(echo "$REVIEWS" | jq -r 'map(select(.state == "APPROVED")) | length > 0')
+            
+#             echo "📊 Merge Status:"
+#             echo "  - Mergeable: $MERGEABLE"
+#             echo "  - State: $MERGEABLE_STATE"
+#             echo "  - Has Approval: $HAS_APPROVAL"
+            
+#             # Check if merge is ready
+#             if [[ "$HAS_APPROVAL" == "true" && "$MERGEABLE" == "true" ]]; then
+#               case "$MERGEABLE_STATE" in
+#                 "clean"|"unstable")
+#                   echo "✅ PR is ready to merge!"
+#                   return 0
+#                   ;;
+#                 "blocked")
+#                   echo "🔒 PR is still blocked - checking specific issues..."
+#                   # Get status checks
+#                   STATUS_CHECKS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#                     -H "Accept: application/vnd.github.v3+json" \
+#                     "https://api.github.com/repos/$REPO/commits/${{ github.event.pull_request.head.sha }}/status")
+                  
+#                   COMBINED_STATUS=$(echo "$STATUS_CHECKS" | jq -r '.state // "unknown"')
+#                   echo "  - Combined Status: $COMBINED_STATUS"
+                  
+#                   if [[ "$COMBINED_STATUS" == "success" || "$COMBINED_STATUS" == "pending" ]]; then
+#                     echo "✅ Status checks are passing - PR should be mergeable soon"
+#                     return 0
+#                   fi
+#                   return 1
+#                   ;;
+#                 *)
+#                   echo "⏳ Waiting for merge state to stabilize..."
+#                   return 1
+#                   ;;
+#               esac
+#             elif [[ "$HAS_APPROVAL" != "true" ]]; then
+#               echo "⏳ Still waiting for codeowner approval..."
+#               return 1
+#             else
+#               echo "⏳ Approval received, waiting for merge conflicts to resolve..."
+#               return 1
+#             fi
+#           }
+          
+#           while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+#             if check_merge_status; then
+#               echo "🎉 PR validation complete - ready for merge!"
+#               break
+#             fi
+            
+#             ATTEMPT=$((ATTEMPT + 1))
+#             MINUTES_ELAPSED=$(( (ATTEMPT * 5) / 60 ))
+            
+#             if [[ $(( ATTEMPT % 12 )) -eq 0 ]]; then  # Every minute
+#               echo "⏱️  Still checking... (${MINUTES_ELAPSED}m elapsed)"
+#             fi
+            
+#             if [[ $ATTEMPT -eq $MAX_ATTEMPTS ]]; then
+#               echo "❌ Timeout: Merge requirements not met after 30 minutes"
+#               echo "🔧 Possible solutions:"
+#               echo "  • Check if all required status checks are passing"
+#               echo "  • Ensure branch protection allows codeowner-only approval"
+#               echo "  • Verify no merge conflicts exist"
+#               echo "  • Check if bypass permissions are needed"
+#               exit 1
+#             fi
+            
+#             sleep 5
+#           done
+
+#       - name: Provide merge guidance
+#         run: |
+#           echo "✅ PR Validation Complete!"
+#           echo ""
+#           echo "🔧 If you still see 'Merging is blocked', try these solutions:"
+#           echo ""
+#           echo "**Option 1: Use Bypass Protection (Recommended)**"
+#           echo "1. Go to your PR on GitHub"
+#           echo "2. Look for 'Merge without waiting for requirements to be met'"
+#           echo "3. Check the bypass option and merge"
+#           echo ""
+#           echo "**Option 2: Update Branch Protection Settings**"
+#           echo "1. Go to Settings > Branches > Edit protection rule"
+#           echo "2. Under 'Restrict pushes that bypass pull request requirements'"
+#           echo "3. Add your username or 'github-actions[bot]' to bypass list"
+#           echo ""
+#           echo "**Option 3: Use Admin Override**"
+#           echo "1. Repository admins can always bypass protection"
+#           echo "2. Use 'Merge without waiting' option"
+#           echo ""
+#           echo "🎯 Current PR Status: Ready for merge with owner approval ✅"
+
+#   # Job 2: Trigger pipeline after successful merge
+#   trigger-harness-pipeline:
+#     runs-on: ubuntu-latest
+#     if: |
+#       github.event_name == 'push' && 
+#       (github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
+    
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+        
+#       - name: Determine migration configuration
+#         id: migration-config
+#         run: |
+#           BRANCH_NAME="${{ github.ref_name }}"
+          
+#           if [[ "$BRANCH_NAME" == "test" ]]; then
+#             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+#             echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
+#             echo "environment=test" >> $GITHUB_OUTPUT
+#           elif [[ "$BRANCH_NAME" == "prod" ]]; then
+#             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+#             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+#             echo "environment=production" >> $GITHUB_OUTPUT
+#           fi
+          
+#           echo "🎯 Target branch: $BRANCH_NAME"
+#           echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
+          
+#       - name: Get commit details
+#         id: commit-info
+#         run: |
+#           echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
+#           echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+#           echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          
+#       - name: Trigger Harness Pipeline
+#         run: |
+#           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
+          
+#           RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+#             -H "Content-Type: application/json" \
+#             -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
+#             -d '{
+#               "repository": "${{ github.repository }}",
+#               "branch": "${{ github.ref_name }}",
+#               "commit_sha": "${{ steps.commit-info.outputs.commit_sha }}",
+#               "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+#               "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+#               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
+#               "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
+#               "environment": "${{ steps.migration-config.outputs.environment }}",
+#               "triggered_by": "${{ github.actor }}"
+#             }')
+          
+#           HTTP_CODE="${RESPONSE: -3}"
+#           RESPONSE_BODY="${RESPONSE%???}"
+          
+#           if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+#             echo "✅ Successfully triggered Harness pipeline"
+#           else
+#             echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
+#             exit 1
+#           fi
+
+
+# .github/workflows/protected-pr.yml
+name: Branch Protection and Pipeline Trigger
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, ready_for_review, reopened]
+    branches: [test, prod]
+  push:
     branches: [test, prod]
 
-permissions:
+permissions:                # needed for the polling job
   contents: read
   pull-requests: write
-  issues: write
+  checks: write
+  statuses: write
 
 jobs:
+# ----------------------------------------------------------------------
+# 1. Light validation of PR source/target + CODEOWNERS file
+#    --> reports the status-check   validate-pr
+# ----------------------------------------------------------------------
+  validate-pr:
+    name: validate-pr         # ← must match status-check context
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enforce allowed branch flow (dev→test, test→prod)
+        run: |
+          SRC="${{ github.head_ref }}"
+          DST="${{ github.base_ref }}"
+
+          case "${SRC}:${DST}" in
+            dev:test|test:prod)  echo "✅ branch flow allowed" ;;
+            *)                   echo "❌ invalid branch flow ${SRC} → ${DST}"; exit 1 ;;
+          esac
+
+      - name: Check that a CODEOWNERS file exists
+        run: |
+          if [[ -f .github/CODEOWNERS || -f CODEOWNERS || -f docs/CODEOWNERS ]]; then
+            echo "✅ CODEOWNERS file found"
+          else
+            echo "❌ No CODEOWNERS file found"; exit 1
+          fi
+
+# ----------------------------------------------------------------------
+# 2. Poll until a code-owner has approved the PR
+#    --> reports the status-check   codeowner-approval
+#    add this context to the protection rule instead of (or in addition to) validate-pr
+# ----------------------------------------------------------------------
+  codeowner-approval:
+    name: codeowner-approval   # ← second required status-check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: validate-pr         # stop early if validate-pr failed
+    timeout-minutes: 30
+
+    steps:
+      - name: Wait for a code-owner approval
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+
+          echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
+          for i in $(seq 1 360); do
+            # list reviews → keep last state per reviewer → filter APPROVED
+            approved=$(gh api \
+              repos/${REPO}/pulls/${PR}/reviews \
+              --jq '[group_by(.user.login)[].[-1] | select(.state=="APPROVED")] | length')
+
+            if [[ "$approved" -gt 0 ]]; then
+              echo "🎉 code-owner has approved – check succeeds"
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          echo "⌛ timed-out waiting for code-owner approval"
+          exit 1
+
+# ----------------------------------------------------------------------
+# 3. Runs only after the PR is merged into test ▸ prod branches
+# ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
-    if: |
-      (github.event.pull_request.head.ref == 'dev' && github.event.pull_request.base.ref == 'test') ||
-      (github.event.pull_request.head.ref == 'test' && github.event.pull_request.base.ref == 'prod')
-    
+    if: >
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Determine Migration Type
-        id: migration-config
-        run: |
-          if [[ "${{ github.event.pull_request.head.ref }}" == "dev" && "${{ github.event.pull_request.base.ref }}" == "test" ]]; then
-            echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
-            echo "expected_duration=480" >> $GITHUB_OUTPUT  # 8 minutes
-          elif [[ "${{ github.event.pull_request.head.ref }}" == "test" && "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
-            echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
-            echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
-            echo "expected_duration=600" >> $GITHUB_OUTPUT  # 10 minutes
-          fi
-
-      - name: Trigger Harness Pipeline
-        id: trigger-pipeline
-        run: |
-          echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
-          echo "👤 Triggered by: ${{ github.actor }}"
+       - name: Checkout code
+         uses: actions/checkout@v4
+        
+       - name: Determine migration configuration
+         id: migration-config
+         run: |
+           BRANCH_NAME="${{ github.ref_name }}"
+         
+           if [[ "$BRANCH_NAME" == "test" ]]; then
+             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+             echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
+             echo "environment=test" >> $GITHUB_OUTPUT
+           elif [[ "$BRANCH_NAME" == "prod" ]]; then
+             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
+             echo "environment=production" >> $GITHUB_OUTPUT
+           fi
           
-          # Add unique tracking identifier
-          tracking_id="gh-${{ github.run_id }}-${{ github.run_attempt }}"
+           echo "🎯 Target branch: $BRANCH_NAME"
+           echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
           
-          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"repository\": \"${{ github.repository }}\",
-              \"pr_number\": ${{ github.event.number }},
-              \"pr_title\": \"${{ github.event.pull_request.title }}\",
-              \"migration_type\": \"${{ steps.migration-config.outputs.migration_type }}\",
-              \"mwaa_environment\": \"${{ steps.migration-config.outputs.mwaa_env }}\",
-              \"triggered_by\": \"${{ github.actor }}\",
-              \"github_user\": \"${{ github.actor }}\",
-              \"commit_sha\": \"${{ github.event.pull_request.head.sha }}\",
-              \"source_branch\": \"${{ github.event.pull_request.head.ref }}\",
-              \"target_branch\": \"${{ github.event.pull_request.base.ref }}\",
-              \"github_run_id\": \"${{ github.run_id }}\",
-              \"tracking_id\": \"$tracking_id\"
-            }")
+       - name: Get commit details
+         id: commit-info
+         run: |
+           echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
+           echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+           echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
           
-          # Extract HTTP status and response body
-          http_status=$(echo "$response" | grep "HTTP_STATUS:" | cut -d: -f2)
-          response_body=$(echo "$response" | sed '/HTTP_STATUS:/d')
+       - name: Trigger Harness Pipeline
+         run: |
+           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
           
-          echo "HTTP Status: $http_status"
-          echo "Harness response: $response_body"
+           RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+             -H "Content-Type: application/json" \
+             -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
+             -d '{
+               "repository": "${{ github.repository }}",
+               "branch": "${{ github.ref_name }}",
+               "commit_sha": "${{ steps.commit-info.outputs.commit_sha }}",
+               "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+               "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
+               "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
+               "environment": "${{ steps.migration-config.outputs.environment }}",
+               "triggered_by": "${{ github.actor }}"
+             }')
           
-          # Check if webhook call was successful
-          if [[ "$http_status" -ge 400 ]]; then
-            echo "❌ Webhook call failed with status $http_status"
-            echo "trigger_status=failed" >> $GITHUB_OUTPUT
-            echo "failure_reason=Webhook call failed with HTTP status $http_status" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          # Extract response details
-          webhook_status=$(echo "$response_body" | jq -r '.status // "UNKNOWN"')
-          ui_url=$(echo "$response_body" | jq -r '.data.uiUrl // .uiUrl // empty')
-          
-          if [[ "$webhook_status" == "SUCCESS" ]]; then
-            echo "✅ Harness webhook returned SUCCESS status"
-            echo "trigger_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Harness webhook returned non-SUCCESS status: $webhook_status"
-            echo "trigger_status=failed" >> $GITHUB_OUTPUT
-            echo "failure_reason=Webhook returned status: $webhook_status" >> $GITHUB_OUTPUT
-          fi
-          
-          echo "ui_url=$ui_url" >> $GITHUB_OUTPUT
-          echo "tracking_id=$tracking_id" >> $GITHUB_OUTPUT
-          echo "webhook_status=$webhook_status" >> $GITHUB_OUTPUT
-
-      - name: Comment on PR - Pipeline Triggered
-        if: steps.trigger-pipeline.outputs.trigger_status == 'success'
-        run: |
-          ui_url_text=""
-          if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
-            ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
-          fi
-          
-          duration_minutes=$((${{ steps.migration-config.outputs.expected_duration }} / 60))
-          
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
-            -d "{
-              \"body\": \"🚀 **Harness Pipeline Triggered Successfully**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**MWAA Environment:** \`${{ steps.migration-config.outputs.mwaa_env }}\`\n**Triggered by:** @${{ github.actor }}\n**Tracking ID:** \`${{ steps.trigger-pipeline.outputs.tracking_id }}\`\n**Webhook Status:** \`${{ steps.trigger-pipeline.outputs.webhook_status }}\`$ui_url_text\n\n⏳ Pipeline is running. Estimated completion time: **${duration_minutes} minutes**\n\n*Will automatically proceed with merge upon completion.*\"
-            }"
-
-      - name: Wait for Pipeline Completion
-        if: steps.trigger-pipeline.outputs.trigger_status == 'success'
-        id: wait-completion
-        run: |
-          duration=${{ steps.migration-config.outputs.expected_duration }}
-          duration_minutes=$((duration / 60))
-          
-          echo "⏳ Waiting for pipeline completion..."
-          echo "Estimated duration: $duration_minutes minutes ($duration seconds)"
-          
-          # Progress updates every 2 minutes
-          update_interval=120
-          updates_count=$((duration / update_interval))
-          
-          for ((i=1; i<=updates_count; i++)); do
-            elapsed=$((i * update_interval))
-            elapsed_minutes=$((elapsed / 60))
-            remaining=$((duration - elapsed))
-            remaining_minutes=$((remaining / 60))
-            
-            echo "Progress: ${elapsed_minutes}/${duration_minutes} minutes elapsed, ~${remaining_minutes} minutes remaining"
-            
-            if [[ $remaining -gt 0 ]]; then
-              sleep $update_interval
-            fi
-          done
-          
-          # Sleep any remaining time
-          remaining=$((duration % update_interval))
-          if [[ $remaining -gt 0 ]]; then
-            echo "Sleeping final $remaining seconds..."
-            sleep $remaining
-          fi
-          
-          echo "✅ Wait period completed - assuming pipeline finished successfully"
-          echo "status=completed" >> $GITHUB_OUTPUT
-
-      - name: Comment on PR - Pipeline Completed
-        if: steps.wait-completion.outputs.status == 'completed'
-        run: |
-          ui_url_text=""
-          if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
-            ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
-          fi
-          
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
-            -d "{
-              \"body\": \"✅ **Harness Pipeline Completed Successfully**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**Tracking ID:** \`${{ steps.trigger-pipeline.outputs.tracking_id }}\`$ui_url_text\n\n🎉 Pipeline execution completed! Proceeding with automatic merge...\"
-            }"
-
-      - name: Merge Pull Request
-        if: steps.wait-completion.outputs.status == 'completed'
-        run: |
-          echo "🔀 Automatically merging PR after successful pipeline execution"
-          
-          merge_response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}/merge \
-            -d '{
-              "commit_title": "Merge PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}",
-              "commit_message": "Automatically merged after successful Harness pipeline execution\n\nTracking ID: ${{ steps.trigger-pipeline.outputs.tracking_id }}\nMigration: ${{ steps.migration-config.outputs.migration_type }}",
-              "merge_method": "merge"
-            }')
-          
-          merge_status=$(echo "$merge_response" | grep "HTTP_STATUS:" | cut -d: -f2)
-          
-          if [[ "$merge_status" -eq 200 ]]; then
-            echo "✅ PR merged successfully"
-            curl -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
-              -d '{
-                "body": "🎉 **PR Merged Successfully**\n\nThe pull request has been automatically merged after successful pipeline execution."
-              }'
-          else
-            echo "❌ Failed to merge PR automatically (status: $merge_status)"
-            curl -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
-              -d '{
-                "body": "⚠️ **Auto-merge Failed**\n\nThe Harness pipeline completed successfully, but automatic merge failed. Please merge manually.\n\n**Possible reasons:**\n- Branch protection rules require reviews\n- Merge conflicts exist\n- PR is not in mergeable state"
-              }'
-          fi
-
-      - name: Comment on PR - Pipeline Trigger Failed
-        if: steps.trigger-pipeline.outputs.trigger_status == 'failed'
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
-            -d '{
-              "body": "❌ **Failed to Trigger Harness Pipeline**\n\n**Migration:** `${{ steps.migration-config.outputs.migration_type }}`\n**Error:** ${{ steps.trigger-pipeline.outputs.failure_reason }}\n\n❗ Please check the webhook configuration and pipeline setup before retrying."
-            }'
-
-
-
-
+           HTTP_CODE="${RESPONSE: -3}"
+           RESPONSE_BODY="${RESPONSE%???}"
+         
+           if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+             echo "✅ Successfully triggered Harness pipeline"
+           else
+             echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
+             exit 1
+           fi
