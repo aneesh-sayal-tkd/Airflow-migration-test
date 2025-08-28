@@ -102,7 +102,7 @@ jobs:
           echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
           echo "👤 Triggered by: ${{ github.actor }}"
           
-          response=$(curl -s -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",
@@ -117,53 +117,120 @@ jobs:
               "target_branch": "${{ github.event.pull_request.base.ref }}"
             }')
           
-          echo "Harness response: $response"
+          # Extract HTTP status and response body
+          http_status=$(echo "$response" | grep "HTTP_STATUS:" | cut -d: -f2)
+          response_body=$(echo "$response" | sed '/HTTP_STATUS:/d')
           
-          # Extract execution details from response
-          execution_id=$(echo "$response" | jq -r '.data.planExecution.uuid // .eventCorrelationId // .executionId // .id')
-          api_url=$(echo "$response" | jq -r '.data.apiUrl // .apiUrl')
+          echo "HTTP Status: $http_status"
+          echo "Harness response: $response_body"
           
-          echo "execution_id=$execution_id" >> $GITHUB_OUTPUT
+          # Check if webhook call was successful
+          if [[ "$http_status" -ge 400 ]]; then
+            echo "❌ Webhook call failed with status $http_status"
+            echo "trigger_status=failed" >> $GITHUB_OUTPUT
+            echo "failure_reason=Webhook call failed with HTTP status $http_status" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Extract execution details from response based on Harness response structure
+          webhook_status=$(echo "$response_body" | jq -r '.status // "UNKNOWN"')
+          event_correlation_id=$(echo "$response_body" | jq -r '.data.eventCorrelationId // .eventCorrelationId // empty')
+          api_url=$(echo "$response_body" | jq -r '.data.apiUrl // .apiUrl // empty')
+          ui_url=$(echo "$response_body" | jq -r '.data.uiUrl // .uiUrl // empty')
+          
+          # For webhook triggers, sometimes the execution ID is in the 'data' field directly
+          if [[ -z "$event_correlation_id" || "$event_correlation_id" == "null" ]]; then
+            event_correlation_id=$(echo "$response_body" | jq -r '.data // empty')
+          fi
+          
+          echo "webhook_status=$webhook_status" >> $GITHUB_OUTPUT
+          echo "event_correlation_id=$event_correlation_id" >> $GITHUB_OUTPUT
           echo "api_url=$api_url" >> $GITHUB_OUTPUT
-          echo "Pipeline execution ID: $execution_id"
-          echo "Status API URL: $api_url"
+          echo "ui_url=$ui_url" >> $GITHUB_OUTPUT
+          echo "trigger_status=success" >> $GITHUB_OUTPUT
+          
+          echo "Webhook Status: $webhook_status"
+          echo "Event Correlation ID: $event_correlation_id"
+          echo "API URL: $api_url"
+          echo "UI URL: $ui_url"
 
-      - name: Comment on PR - Pipeline Triggered
+      - name: Comment on PR - Webhook Failed
+        if: steps.trigger-pipeline.outputs.trigger_status == 'failed'
         run: |
           curl -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
             -d '{
-              "body": "🚀 **Harness Pipeline Triggered**\n\n**Migration:** `${{ steps.migration-config.outputs.migration_type }}`\n**MWAA Environment:** `${{ steps.migration-config.outputs.mwaa_env }}`\n**Triggered by:** @${{ github.actor }}\n**Execution ID:** `${{ steps.trigger-pipeline.outputs.execution_id }}`\n\n⏳ Monitoring pipeline status..."
+              "body": "❌ **Failed to Trigger Harness Pipeline**\n\n**Migration:** `${{ steps.migration-config.outputs.migration_type }}`\n**Error:** ${{ steps.trigger-pipeline.outputs.failure_reason }}\n\n❗ Please check the webhook configuration and try again."
             }'
 
-      - name: Monitor Pipeline Status (No Auth Required)
-        id: monitor-pipeline
+      - name: Comment on PR - Pipeline Triggered
+        if: steps.trigger-pipeline.outputs.trigger_status == 'success'
         run: |
-          api_url="${{ steps.trigger-pipeline.outputs.api_url }}"
-          execution_id="${{ steps.trigger-pipeline.outputs.execution_id }}"
-          
-          if [[ -z "$api_url" || "$api_url" == "null" ]]; then
-            echo "❌ No API URL received from Harness trigger response"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "failure_reason=No API URL received from Harness webhook response" >> $GITHUB_OUTPUT
-            exit 1
+          ui_url_text=""
+          if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
+            ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
           fi
           
-          echo "Monitoring pipeline using URL: $api_url"
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
+            -d "{
+              \"body\": \"🚀 **Harness Pipeline Triggered**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**MWAA Environment:** \`${{ steps.migration-config.outputs.mwaa_env }}\`\n**Triggered by:** @${{ github.actor }}\n**Webhook Status:** \`${{ steps.trigger-pipeline.outputs.webhook_status }}\`\n**Event ID:** \`${{ steps.trigger-pipeline.outputs.event_correlation_id }}\`$ui_url_text\n\n⏳ Monitoring pipeline status...\"
+            }"
+
+      - name: Monitor Pipeline Status
+        id: monitor-pipeline
+        if: steps.trigger-pipeline.outputs.trigger_status == 'success'
+        run: |
+          api_url="${{ steps.trigger-pipeline.outputs.api_url }}"
+          event_id="${{ steps.trigger-pipeline.outputs.event_correlation_id }}"
+          webhook_status="${{ steps.trigger-pipeline.outputs.webhook_status }}"
           
-          # Poll pipeline status using the provided API URL (no authentication needed)
+          # If webhook status is already FAILED, don't wait
+          if [[ "$webhook_status" == "FAILED" ]]; then
+            echo "❌ Webhook reported FAILED status immediately"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "failure_reason=Webhook trigger failed - check Harness trigger conditions and configuration" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check if we have an API URL for monitoring
+          if [[ -z "$api_url" || "$api_url" == "null" ]]; then
+            echo "⚠️ No API URL provided - assuming pipeline was triggered successfully"
+            echo "status=success" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Monitoring pipeline using API URL: $api_url"
+          
+          # Poll pipeline status using the provided API URL
           max_attempts=60  # 30 minutes with 30-second intervals
           attempt=0
           
           while [ $attempt -lt $max_attempts ]; do
-            # Use the apiUrl from webhook response - no auth required by default
+            echo "Checking pipeline status (attempt $((attempt + 1))/$max_attempts)..."
+            
+            # Call the status API (no authentication required for trigger status endpoints)
             status_response=$(curl -s -X GET "$api_url")
             
-            pipeline_status=$(echo "$status_response" | jq -r '.status // .data.status')
+            echo "Status API response: $status_response"
             
-            echo "Pipeline status: $pipeline_status (attempt $((attempt + 1))/$max_attempts)"
+            # Parse the response - structure may vary
+            pipeline_status=$(echo "$status_response" | jq -r '.data.webhookProcessingDetails.pipelineExecutionSummary.status // .data.status // .status // empty')
+            event_found=$(echo "$status_response" | jq -r '.data.webhookProcessingDetails.eventFound // true')
+            
+            # If event is not found yet, continue waiting
+            if [[ "$event_found" == "false" ]]; then
+              echo "Event not processed yet, waiting..."
+              sleep 30
+              attempt=$((attempt + 1))
+              continue
+            fi
+            
+            echo "Pipeline status: $pipeline_status"
             
             case "$pipeline_status" in
               "SUCCESS"|"SUCCEEDED")
@@ -173,7 +240,7 @@ jobs:
                 ;;
               "FAILED"|"FAILURE"|"ERROR")
                 echo "❌ Pipeline failed"
-                failure_reason=$(echo "$status_response" | jq -r '.data.failureInfo.message // .failureReason // "Pipeline execution failed"')
+                failure_reason=$(echo "$status_response" | jq -r '.data.webhookProcessingDetails.pipelineExecutionSummary.message // .data.failureInfo.message // .message // "Pipeline execution failed"')
                 echo "status=failed" >> $GITHUB_OUTPUT
                 echo "failure_reason=$failure_reason" >> $GITHUB_OUTPUT
                 break
@@ -184,13 +251,13 @@ jobs:
                 echo "failure_reason=Pipeline execution was aborted or cancelled" >> $GITHUB_OUTPUT
                 break
                 ;;
-              "RUNNING"|"QUEUED"|"PAUSED")
-                echo "Pipeline still running, waiting..."
+              "RUNNING"|"QUEUED"|"PAUSED"|"")
+                echo "Pipeline still running or queued, waiting..."
                 sleep 30
                 attempt=$((attempt + 1))
                 ;;
               *)
-                echo "Unknown status: $pipeline_status"
+                echo "Unknown status: $pipeline_status, continuing to monitor..."
                 sleep 30
                 attempt=$((attempt + 1))
                 ;;
@@ -203,7 +270,6 @@ jobs:
             echo "failure_reason=Pipeline monitoring timed out after 30 minutes" >> $GITHUB_OUTPUT
           fi
 
-      # Rest of the steps remain the same...
       - name: Comment on PR - Pipeline Failed
         if: steps.monitor-pipeline.outputs.status == 'failed' || steps.monitor-pipeline.outputs.status == 'aborted' || steps.monitor-pipeline.outputs.status == 'timeout'
         run: |
@@ -218,24 +284,34 @@ jobs:
             status_text="Timed Out"
           fi
           
+          ui_url_text=""
+          if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
+            ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
+          fi
+          
           curl -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
             -d "{
-              \"body\": \"$status_emoji **Harness Pipeline $status_text**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**Execution ID:** \`${{ steps.trigger-pipeline.outputs.execution_id }}\`\n**Failure Reason:** ${{ steps.monitor-pipeline.outputs.failure_reason }}\n\n❗ Please review the pipeline logs and fix the issues before retrying.\"
+              \"body\": \"$status_emoji **Harness Pipeline $status_text**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**Event ID:** \`${{ steps.trigger-pipeline.outputs.event_correlation_id }}\`\n**Failure Reason:** ${{ steps.monitor-pipeline.outputs.failure_reason }}$ui_url_text\n\n❗ Please review the pipeline logs and fix the issues before retrying.\"
             }"
 
       - name: Comment on PR - Pipeline Success
         if: steps.monitor-pipeline.outputs.status == 'success'
         run: |
+          ui_url_text=""
+          if [[ -n "${{ steps.trigger-pipeline.outputs.ui_url }}" && "${{ steps.trigger-pipeline.outputs.ui_url }}" != "null" ]]; then
+            ui_url_text="\n**Pipeline URL:** [${{ steps.trigger-pipeline.outputs.ui_url }}](${{ steps.trigger-pipeline.outputs.ui_url }})"
+          fi
+          
           curl -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.number }}/comments \
-            -d '{
-              "body": "✅ **Harness Pipeline Completed Successfully**\n\n**Migration:** `${{ steps.migration-config.outputs.migration_type }}`\n**Execution ID:** `${{ steps.trigger-pipeline.outputs.execution_id }}`\n\n🎉 All checks passed! Proceeding with automatic merge..."
-            }'
+            -d "{
+              \"body\": \"✅ **Harness Pipeline Completed Successfully**\n\n**Migration:** \`${{ steps.migration-config.outputs.migration_type }}\`\n**Event ID:** \`${{ steps.trigger-pipeline.outputs.event_correlation_id }}\`$ui_url_text\n\n🎉 All checks passed! Proceeding with automatic merge...\"
+            }"
 
       - name: Merge Pull Request
         if: steps.monitor-pipeline.outputs.status == 'success'
@@ -248,7 +324,7 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}/merge \
             -d '{
               "commit_title": "Merge PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}",
-              "commit_message": "Automatically merged after successful Harness pipeline execution\n\nExecution ID: ${{ steps.trigger-pipeline.outputs.execution_id }}\nMigration: ${{ steps.migration-config.outputs.migration_type }}",
+              "commit_message": "Automatically merged after successful Harness pipeline execution\n\nEvent ID: ${{ steps.trigger-pipeline.outputs.event_correlation_id }}\nMigration: ${{ steps.migration-config.outputs.migration_type }}",
               "merge_method": "merge"
             }' || {
               echo "❌ Failed to merge PR automatically"
@@ -260,7 +336,6 @@ jobs:
                   "body": "⚠️ **Auto-merge Failed**\n\nThe Harness pipeline completed successfully, but automatic merge failed. Please merge manually."
                 }'
             }
-
 
 
 
