@@ -510,21 +510,19 @@
 
 
 # .github/workflows/protected-pr.yml
+# .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
-
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
     branches: [test, prod]
   push:
     branches: [test, prod]
-
 permissions:                # needed for the polling job
   contents: read
   pull-requests: write
   checks: write
   statuses: write
-
 jobs:
 # ----------------------------------------------------------------------
 # 1. Light validation of PR source/target + CODEOWNERS file
@@ -534,20 +532,16 @@ jobs:
     name: validate-pr         # ← must match status-check context
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Enforce allowed branch flow (dev→test, test→prod)
         run: |
           SRC="${{ github.head_ref }}"
           DST="${{ github.base_ref }}"
-
           case "${SRC}:${DST}" in
             dev:test|test:prod)  echo "✅ branch flow allowed" ;;
             *)                   echo "❌ invalid branch flow ${SRC} → ${DST}"; exit 1 ;;
           esac
-
       - name: Check that a CODEOWNERS file exists
         run: |
           if [[ -f .github/CODEOWNERS || -f CODEOWNERS || -f docs/CODEOWNERS ]]; then
@@ -555,7 +549,6 @@ jobs:
           else
             echo "❌ No CODEOWNERS file found"; exit 1
           fi
-
 # ----------------------------------------------------------------------
 # 2. Poll until a code-owner has approved the PR
 #    --> reports the status-check   codeowner-approval
@@ -567,7 +560,6 @@ jobs:
     if: github.event_name == 'pull_request'
     needs: validate-pr         # stop early if validate-pr failed
     timeout-minutes: 30
-
     steps:
       - name: Wait for a code-owner approval
         env:
@@ -575,27 +567,49 @@ jobs:
         run: |
           PR="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
-
           echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
           for i in $(seq 1 360); do
             # list reviews → keep last state per reviewer → filter APPROVED
             approved=$(gh api \
               repos/${REPO}/pulls/${PR}/reviews \
               --jq '[group_by(.user.login)[].[-1] | select(.state=="APPROVED")] | length')
-
             if [[ "$approved" -gt 0 ]]; then
               echo "🎉 code-owner has approved – check succeeds"
               exit 0
             fi
-
             sleep 5
           done
-
           echo "⌛ timed-out waiting for code-owner approval"
           exit 1
+# ────────────────────────────────────────────────────────────────
+# 3. Rebase PR branch onto the target branch after approval
+#    (satisfies “Require branch to be up-to-date” rule)
+# ────────────────────────────────────────────────────────────────
+  sync-with-base:
+    name: sync-with-base
+    needs: codeowner-approval
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Rebase onto ${{ github.base_ref }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin ${{ github.base_ref }}
+          git rebase origin/${{ github.base_ref }}
+
+      - name: Push rebased branch
+        run: git push --force-with-lease origin HEAD:${{ github.head_ref }}
+
 
 # ----------------------------------------------------------------------
-# 3. Runs only after the PR is merged into test ▸ prod branches
+# 4. Runs only after the PR is merged into test ▸ prod branches
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
@@ -630,6 +644,33 @@ jobs:
            echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
            echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
            echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+       - name: Get PR details from merge commit
+         id: pr-info
+         run: |
+           # Try to find the PR that was merged using the commit SHA
+           PR_NUMBER=$(gh pr list --state merged --search "sha:${{ github.sha }}" --json number --jq '.[0].number // empty')
+           
+           if [[ -n "$PR_NUMBER" ]]; then
+             echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+             echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
+             echo "🔗 Found PR: #$PR_NUMBER"
+           else
+             # Fallback: try to extract PR number from merge commit message
+             COMMIT_MSG="${{ steps.commit-info.outputs.commit_message }}"
+             if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
+               PR_NUMBER="${BASH_REMATCH[1]}"
+               echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+               echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
+               echo "🔗 Extracted PR from commit message: #$PR_NUMBER"
+             else
+               echo "pr_number=" >> $GITHUB_OUTPUT
+               echo "pr_url=" >> $GITHUB_OUTPUT
+               echo "⚠️ Could not determine PR number"
+             fi
+           fi
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
        - name: Trigger Harness Pipeline
          run: |
@@ -647,7 +688,9 @@ jobs:
                "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
                "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
                "environment": "${{ steps.migration-config.outputs.environment }}",
-               "triggered_by": "${{ github.actor }}"
+               "triggered_by": "${{ github.actor }}",
+               "pr_number": "${{ steps.pr-info.outputs.pr_number }}",
+               "pr_url": "${{ steps.pr-info.outputs.pr_url }}"
              }')
           
            HTTP_CODE="${RESPONSE: -3}"
@@ -655,6 +698,9 @@ jobs:
          
            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
              echo "✅ Successfully triggered Harness pipeline"
+             if [[ -n "${{ steps.pr-info.outputs.pr_url }}" ]]; then
+               echo "🔗 Related PR: ${{ steps.pr-info.outputs.pr_url }}"
+             fi
            else
              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
              exit 1
