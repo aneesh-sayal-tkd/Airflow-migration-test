@@ -279,7 +279,10 @@ def create_connection(
             "Body": payload
         }
 
-        print(f"Sending create connection request with payload: {payload}")
+        redacted_payload = dict(payload)
+        if "password" in redacted_payload:
+            redacted_payload["password"] = "<redacted>"
+        print(f"Sending create connection request with payload: {redacted_payload}")
 
         response = mwaa_client.invoke_rest_api(**request_params)
 
