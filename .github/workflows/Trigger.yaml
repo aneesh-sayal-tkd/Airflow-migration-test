@@ -648,9 +648,8 @@ jobs:
           
            RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
              -H "Content-Type: application/json" \
-             -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
              -d '{
-               "repository": "${{ github.repository }}",
+               "repository": "${{ github.server_url }}/${{ github.repository }}",
                "triggered_by": "${{ github.actor }}",
                "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
                "environment": "${{ steps.migration-config.outputs.environment }}",
@@ -670,4 +669,5 @@ jobs:
              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
              exit 1
            fi
+
 
