@@ -515,9 +515,9 @@ name: Branch Protection and Pipeline Trigger
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    branches: [test, prod]
+    branches: [tst, prd]
   push:
-    branches: [test, prod]
+    branches: [tst, prd]
 permissions:                # needed for the polling job
   contents: write
   pull-requests: write
@@ -534,12 +534,12 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - name: Enforce allowed branch flow (dev→test, test→prod)
+      - name: Enforce allowed branch flow (dev→tst, tst→prd)
         run: |
           SRC="${{ github.head_ref }}"
           DST="${{ github.base_ref }}"
           case "${SRC}:${DST}" in
-            dev:test|test:prod)  echo "✅ branch flow allowed" ;;
+            dev:tst|tst:prd)  echo "✅ branch flow allowed" ;;
             *)                   echo "❌ invalid branch flow ${SRC} → ${DST}"; exit 1 ;;
           esac
       - name: Check that a CODEOWNERS file exists
@@ -581,16 +581,14 @@ jobs:
           done
           echo "⌛ timed-out waiting for code-owner approval"
           exit 1
-
-
 # ----------------------------------------------------------------------
-# 3. Runs only after the PR is merged into test ▸ prod branches
+# 3. Runs only after the PR is merged into tst ▸ prd branches
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
+      (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
     steps:
        - name: Checkout code
          uses: actions/checkout@v4
@@ -600,12 +598,12 @@ jobs:
          run: |
            BRANCH_NAME="${{ github.ref_name }}"
          
-           if [[ "$BRANCH_NAME" == "test" ]]; then
-             echo "migration_type=dev-to-test" >> $GITHUB_OUTPUT
+           if [[ "$BRANCH_NAME" == "tst" ]]; then
+             echo "migration_type=dev-to-tst" >> $GITHUB_OUTPUT
              echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
              echo "environment=test" >> $GITHUB_OUTPUT
-           elif [[ "$BRANCH_NAME" == "prod" ]]; then
-             echo "migration_type=test-to-prod" >> $GITHUB_OUTPUT
+           elif [[ "$BRANCH_NAME" == "prd" ]]; then
+             echo "migration_type=tst-to-prd" >> $GITHUB_OUTPUT
              echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
              echo "environment=production" >> $GITHUB_OUTPUT
            fi
@@ -619,7 +617,6 @@ jobs:
            echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
            echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
            echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
-
        - name: Get PR details from merge commit
          id: pr-info
          run: |
