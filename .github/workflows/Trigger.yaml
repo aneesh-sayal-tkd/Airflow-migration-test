@@ -600,12 +600,10 @@ jobs:
          
            if [[ "$BRANCH_NAME" == "tst" ]]; then
              echo "migration_type=dev-to-tst" >> $GITHUB_OUTPUT
-             echo "mwaa_env=${{ vars.TEST_MWAA }}" >> $GITHUB_OUTPUT
-             echo "environment=test" >> $GITHUB_OUTPUT
+             echo "environment=tst" >> $GITHUB_OUTPUT
            elif [[ "$BRANCH_NAME" == "prd" ]]; then
              echo "migration_type=tst-to-prd" >> $GITHUB_OUTPUT
-             echo "mwaa_env=${{ vars.PROD_MWAA_ENV }}" >> $GITHUB_OUTPUT
-             echo "environment=production" >> $GITHUB_OUTPUT
+             echo "environment=prd" >> $GITHUB_OUTPUT
            fi
           
            echo "🎯 Target branch: $BRANCH_NAME"
@@ -653,16 +651,11 @@ jobs:
              -H "Authorization: Bearer ${{ secrets.HARNESS_API_TOKEN }}" \
              -d '{
                "repository": "${{ github.repository }}",
-               "branch": "${{ github.ref_name }}",
-               "commit_sha": "${{ steps.commit-info.outputs.commit_sha }}",
-               "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
-               "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
-               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
-               "mwaa_environment": "${{ steps.migration-config.outputs.mwaa_env }}",
-               "environment": "${{ steps.migration-config.outputs.environment }}",
                "triggered_by": "${{ github.actor }}",
-               "pr_number": "${{ steps.pr-info.outputs.pr_number }}",
-               "pr_url": "${{ steps.pr-info.outputs.pr_url }}"
+               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
+               "environment": "${{ steps.migration-config.outputs.environment }}",
+               "PR_URL": "${{ steps.pr-info.outputs.pr_url }}",
+               "EDB_ID": "${{ vars.EDB_ID }}"
              }')
           
            HTTP_CODE="${RESPONSE: -3}"
@@ -677,3 +670,4 @@ jobs:
              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
              exit 1
            fi
+
