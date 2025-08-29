@@ -519,7 +519,7 @@ on:
   push:
     branches: [test, prod]
 permissions:                # needed for the polling job
-  contents: read
+  contents: write
   pull-requests: write
   checks: write
   statuses: write
