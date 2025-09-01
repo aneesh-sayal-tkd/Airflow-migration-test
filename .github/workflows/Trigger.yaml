@@ -510,6 +510,167 @@
 
 
 # .github/workflows/protected-pr.yml
+# # .github/workflows/protected-pr.yml
+# name: Branch Protection and Pipeline Trigger
+# on:
+#   pull_request:
+#     types: [opened, synchronize, ready_for_review, reopened]
+#     branches: [tst, prd]
+#   push:
+#     branches: [tst, prd]
+# permissions:                # needed for the polling job
+#   contents: write
+#   pull-requests: write
+#   checks: write
+#   statuses: write
+# jobs:
+# # ----------------------------------------------------------------------
+# # 1. Light validation of PR source/target + CODEOWNERS file
+# #    --> reports the status-check   validate-pr
+# # ----------------------------------------------------------------------
+#   validate-pr:
+#     name: validate-pr         # ← must match status-check context
+#     runs-on: ubuntu-latest
+#     if: github.event_name == 'pull_request'
+#     steps:
+#       - uses: actions/checkout@v4
+#       - name: Enforce allowed branch flow (dev→tst, tst→prd)
+#         run: |
+#           SRC="${{ github.head_ref }}"
+#           DST="${{ github.base_ref }}"
+#           case "${SRC}:${DST}" in
+#             dev:tst|tst:prd)  echo "✅ branch flow allowed" ;;
+#             *)                   echo "❌ invalid branch flow ${SRC} → ${DST}"; exit 1 ;;
+#           esac
+#       - name: Check that a CODEOWNERS file exists
+#         run: |
+#           if [[ -f .github/CODEOWNERS || -f CODEOWNERS || -f docs/CODEOWNERS ]]; then
+#             echo "✅ CODEOWNERS file found"
+#           else
+#             echo "❌ No CODEOWNERS file found"; exit 1
+#           fi
+# # ----------------------------------------------------------------------
+# # 2. Poll until a code-owner has approved the PR
+# #    --> reports the status-check   codeowner-approval
+# #    add this context to the protection rule instead of (or in addition to) validate-pr
+# # ----------------------------------------------------------------------
+#   codeowner-approval:
+#     name: codeowner-approval   # ← second required status-check
+#     runs-on: ubuntu-latest
+#     if: github.event_name == 'pull_request'
+#     needs: validate-pr         # stop early if validate-pr failed
+#     timeout-minutes: 30
+#     steps:
+#       - name: Wait for a code-owner approval
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         run: |
+#           PR="${{ github.event.pull_request.number }}"
+#           REPO="${{ github.repository }}"
+#           echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
+#           for i in $(seq 1 360); do
+#             # list reviews → keep last state per reviewer → filter APPROVED
+#             approved=$(gh api \
+#               repos/${REPO}/pulls/${PR}/reviews \
+#               --jq '[group_by(.user.login)[].[-1] | select(.state=="APPROVED")] | length')
+#             if [[ "$approved" -gt 0 ]]; then
+#               echo "🎉 code-owner has approved – check succeeds"
+#               exit 0
+#             fi
+#             sleep 5
+#           done
+#           echo "⌛ timed-out waiting for code-owner approval"
+#           exit 1
+# # ----------------------------------------------------------------------
+# # 3. Runs only after the PR is merged into tst ▸ prd branches
+# # ----------------------------------------------------------------------
+#   trigger-harness-pipeline:
+#     runs-on: ubuntu-latest
+#     if: >
+#       github.event_name == 'push' &&
+#       (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
+#     steps:
+#        - name: Checkout code
+#          uses: actions/checkout@v4
+        
+#        - name: Determine migration configuration
+#          id: migration-config
+#          run: |
+#            BRANCH_NAME="${{ github.ref_name }}"
+         
+#            if [[ "$BRANCH_NAME" == "tst" ]]; then
+#              echo "migration_type=dev-to-tst" >> $GITHUB_OUTPUT
+#              echo "environment=tst" >> $GITHUB_OUTPUT
+#            elif [[ "$BRANCH_NAME" == "prd" ]]; then
+#              echo "migration_type=tst-to-prd" >> $GITHUB_OUTPUT
+#              echo "environment=prd" >> $GITHUB_OUTPUT
+#            fi
+          
+#            echo "🎯 Target branch: $BRANCH_NAME"
+#            echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
+          
+#        - name: Get commit details
+#          id: commit-info
+#          run: |
+#            echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
+#            echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+#            echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+#        - name: Get PR details from merge commit
+#          id: pr-info
+#          run: |
+#            # Try to find the PR that was merged using the commit SHA
+#            PR_NUMBER=$(gh pr list --state merged --search "sha:${{ github.sha }}" --json number --jq '.[0].number // empty')
+           
+#            if [[ -n "$PR_NUMBER" ]]; then
+#              echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+#              echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
+#              echo "🔗 Found PR: #$PR_NUMBER"
+#            else
+#              # Fallback: try to extract PR number from merge commit message
+#              COMMIT_MSG="${{ steps.commit-info.outputs.commit_message }}"
+#              if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
+#                PR_NUMBER="${BASH_REMATCH[1]}"
+#                echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+#                echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
+#                echo "🔗 Extracted PR from commit message: #$PR_NUMBER"
+#              else
+#                echo "pr_number=" >> $GITHUB_OUTPUT
+#                echo "pr_url=" >> $GITHUB_OUTPUT
+#                echo "⚠️ Could not determine PR number"
+#              fi
+#            fi
+#          env:
+#            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+#        - name: Trigger Harness Pipeline
+#          run: |
+#            echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
+          
+#            RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+#              -H "Content-Type: application/json" \
+#              -d '{
+#                "repository": "${{ github.server_url }}/${{ github.repository }}",
+#                "triggered_by": "${{ github.actor }}",
+#                "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
+#                "environment": "${{ steps.migration-config.outputs.environment }}",
+#                "PR_URL": "${{ steps.pr-info.outputs.pr_url }}",
+#                "EDB_ID": "${{ vars.EDB_ID }}"
+#              }')
+          
+#            HTTP_CODE="${RESPONSE: -3}"
+#            RESPONSE_BODY="${RESPONSE%???}"
+         
+#            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+#              echo "✅ Successfully triggered Harness pipeline"
+#              if [[ -n "${{ steps.pr-info.outputs.pr_url }}" ]]; then
+#                echo "🔗 Related PR: ${{ steps.pr-info.outputs.pr_url }}"
+#              fi
+#            else
+#              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
+#              exit 1
+#            fi
+
+
 # .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
@@ -518,22 +679,28 @@ on:
     branches: [tst, prd]
   push:
     branches: [tst, prd]
-permissions:                # needed for the polling job
+permissions:
   contents: write
   pull-requests: write
   checks: write
   statuses: write
+  security-events: write
+  actions: read
+
 jobs:
 # ----------------------------------------------------------------------
 # 1. Light validation of PR source/target + CODEOWNERS file
 #    --> reports the status-check   validate-pr
 # ----------------------------------------------------------------------
   validate-pr:
-    name: validate-pr         # ← must match status-check context
+    name: validate-pr
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    outputs:
+      status: ${{ steps.set-status.outputs.status }}
     steps:
       - uses: actions/checkout@v4
+      
       - name: Enforce allowed branch flow (dev→tst, tst→prd)
         run: |
           SRC="${{ github.head_ref }}"
@@ -542,6 +709,7 @@ jobs:
             dev:tst|tst:prd)  echo "✅ branch flow allowed" ;;
             *)                   echo "❌ invalid branch flow ${SRC} → ${DST}"; exit 1 ;;
           esac
+          
       - name: Check that a CODEOWNERS file exists
         run: |
           if [[ -f .github/CODEOWNERS || -f CODEOWNERS || -f docs/CODEOWNERS ]]; then
@@ -549,46 +717,309 @@ jobs:
           else
             echo "❌ No CODEOWNERS file found"; exit 1
           fi
+          
+      - name: Set job status
+        id: set-status
+        if: always()
+        run: |
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+
 # ----------------------------------------------------------------------
-# 2. Poll until a code-owner has approved the PR
-#    --> reports the status-check   codeowner-approval
-#    add this context to the protection rule instead of (or in addition to) validate-pr
+# 2. CodeQL and Copilot Security Analysis - BLOCKS if issues found
+#    --> reports the status-check   code-security
 # ----------------------------------------------------------------------
-  codeowner-approval:
-    name: codeowner-approval   # ← second required status-check
+  code-security:
+    name: code-security
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    needs: validate-pr         # stop early if validate-pr failed
+    needs: validate-pr
+    outputs:
+      codeql_status: ${{ steps.set-codeql-status.outputs.status }}
+      copilot_status: ${{ steps.set-copilot-status.outputs.status }}
+      has_security_issues: ${{ steps.check-security-issues.outputs.has_issues }}
+      issues_acknowledged: ${{ steps.check-acknowledgment.outputs.acknowledged }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python, javascript, yaml
+          config-file: ./.github/codeql/codeql-config.yml
+        
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+        
+      - name: Perform CodeQL Analysis
+        id: codeql-analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python,javascript,yaml"
+          
+      - name: Check for CodeQL Security Issues
+        id: check-security-issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          
+          # Get CodeQL alerts for this repository
+          ALERTS=$(gh api repos/$REPO/code-scanning/alerts \
+            --jq '[.[] | select(.state == "open" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length')
+          
+          # Get alerts introduced by this PR (compare with base branch)
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          
+          NEW_ALERTS=$(gh api repos/$REPO/code-scanning/alerts \
+            --jq --arg ref "$HEAD_SHA" '[.[] | select(.state == "open" and .most_recent_instance.ref == ("refs/heads/" + $ref) and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length')
+          
+          echo "Total open high/critical alerts: $ALERTS"
+          echo "New alerts in this PR: $NEW_ALERTS"
+          
+          if [[ "$NEW_ALERTS" -gt 0 ]]; then
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+            echo "❌ Found $NEW_ALERTS new high/critical security issues in this PR"
+            
+            # Get detailed alert information
+            gh api repos/$REPO/code-scanning/alerts \
+              --jq --arg ref "$HEAD_SHA" '.[] | select(.state == "open" and .most_recent_instance.ref == ("refs/heads/" + $ref) and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location}' \
+              > codeql_issues.json
+            
+            echo "## 🚨 CodeQL Security Issues Found" >> $GITHUB_STEP_SUMMARY
+            echo "This PR introduces **$NEW_ALERTS** new high/critical security issues:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Format issues for summary
+            while IFS= read -r issue; do
+              RULE=$(echo "$issue" | jq -r '.rule')
+              SEVERITY=$(echo "$issue" | jq -r '.severity')
+              LOCATION=$(echo "$issue" | jq -r '.location.path + ":" + (.location.start_line | tostring)')
+              echo "- **$SEVERITY**: $RULE in \`$LOCATION\`" >> $GITHUB_STEP_SUMMARY
+            done < codeql_issues.json
+            
+          else
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+            echo "✅ No new high/critical security issues found"
+          fi
+          
+      - name: GitHub Copilot Security Analysis
+        id: copilot-security
+        if: steps.check-security-issues.outputs.has_issues == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            
+            try {
+              // Install GitHub Copilot CLI if not available
+              execSync('npm install -g @githubnext/github-copilot-cli', { stdio: 'inherit' });
+              
+              // Read CodeQL issues
+              const fs = require('fs');
+              const issues = JSON.parse(fs.readFileSync('codeql_issues.json', 'utf8'));
+              
+              let suggestions = [];
+              
+              for (const issue of issues) {
+                // Run Copilot analysis for each issue
+                const prompt = `Review this security issue and provide fix suggestions: ${issue.rule} in ${issue.location.path}`;
+                const result = execSync(`gh copilot suggest "${prompt}"`, { encoding: 'utf8', stdio: 'pipe' });
+                
+                suggestions.push({
+                  issue: issue.rule,
+                  location: issue.location,
+                  suggestion: result
+                });
+              }
+              
+              // Save suggestions to file
+              fs.writeFileSync('copilot_suggestions.json', JSON.stringify(suggestions, null, 2));
+              
+              console.log('✅ Copilot security analysis completed');
+              return { success: true, suggestions: suggestions };
+              
+            } catch (error) {
+              console.log('❌ Copilot security analysis failed:', error.message);
+              return { success: false, error: error.message };
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Post Security Issues Comment
+        if: steps.check-security-issues.outputs.has_issues == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Read issues and suggestions
+            const issues = JSON.parse(fs.readFileSync('codeql_issues.json', 'utf8'));
+            const suggestions = JSON.parse(fs.readFileSync('copilot_suggestions.json', 'utf8'));
+            
+            let commentBody = `## 🚨 Security Issues Detected\n\n`;
+            commentBody += `This PR introduces **${issues.length}** new high/critical security issues that must be addressed:\n\n`;
+            
+            for (let i = 0; i < issues.length; i++) {
+              const issue = issues[i];
+              const suggestion = suggestions[i];
+              
+              commentBody += `### Issue ${i + 1}: ${issue.rule}\n`;
+              commentBody += `**Severity:** ${issue.severity}\n`;
+              commentBody += `**Location:** \`${issue.location.path}:${issue.location.start_line}\`\n\n`;
+              commentBody += `**Copilot Suggestion:**\n`;
+              commentBody += `\`\`\`\n${suggestion.suggestion}\n\`\`\`\n\n`;
+            }
+            
+            commentBody += `---\n\n`;
+            commentBody += `**Next Steps:**\n`;
+            commentBody += `1. ✅ **Fix the issues** by implementing the suggested changes\n`;
+            commentBody += `2. 🔄 **Push your changes** to trigger a new security scan\n`;
+            commentBody += `3. 🚫 **Or acknowledge issues** by commenting: \`/acknowledge-security-issues\`\n\n`;
+            commentBody += `⚠️ **The workflow is blocked until these issues are resolved or acknowledged.**`;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+            
+      - name: Check for Issue Acknowledgment
+        id: check-acknowledgment
+        if: steps.check-security-issues.outputs.has_issues == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          
+          # Check for acknowledgment comment
+          ACKNOWLEDGED=$(gh api repos/$REPO/issues/$PR_NUMBER/comments \
+            --jq '.[] | select(.body | contains("/acknowledge-security-issues")) | .user.login' | head -1)
+          
+          # Check if PR has 'security-issues-acknowledged' label
+          LABEL_EXISTS=$(gh api repos/$REPO/issues/$PR_NUMBER/labels \
+            --jq '.[] | select(.name == "security-issues-acknowledged") | .name' | head -1)
+          
+          if [[ -n "$ACKNOWLEDGED" || -n "$LABEL_EXISTS" ]]; then
+            echo "acknowledged=true" >> $GITHUB_OUTPUT
+            echo "✅ Security issues acknowledged by: $ACKNOWLEDGED"
+            
+            # Add label if not present
+            if [[ -z "$LABEL_EXISTS" ]]; then
+              gh api repos/$REPO/issues/$PR_NUMBER/labels -f labels='["security-issues-acknowledged"]'
+            fi
+          else
+            echo "acknowledged=false" >> $GITHUB_OUTPUT
+            echo "❌ Security issues not yet acknowledged"
+          fi
+          
+      - name: Block if Security Issues Not Resolved or Acknowledged
+        if: steps.check-security-issues.outputs.has_issues == 'true' && steps.check-acknowledgment.outputs.acknowledged == 'false'
+        run: |
+          echo "🚫 WORKFLOW BLOCKED: Security issues detected and not acknowledged"
+          echo "Please either:"
+          echo "  1. Fix the security issues and push changes"
+          echo "  2. Comment '/acknowledge-security-issues' to proceed with known issues"
+          exit 1
+          
+      - name: Set CodeQL status
+        id: set-codeql-status
+        if: always()
+        run: |
+          if [[ "${{ steps.codeql-analysis.outcome }}" == "success" ]]; then
+            if [[ "${{ steps.check-security-issues.outputs.has_issues }}" == "true" && "${{ steps.check-acknowledgment.outputs.acknowledged }}" == "false" ]]; then
+              echo "status=blocked" >> $GITHUB_OUTPUT
+            else
+              echo "status=success" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Set Copilot status
+        id: set-copilot-status
+        if: always()
+        run: |
+          if [[ "${{ steps.check-security-issues.outputs.has_issues }}" == "true" ]]; then
+            if [[ "${{ steps.copilot-security.outcome }}" == "success" ]]; then
+              echo "status=success" >> $GITHUB_OUTPUT
+            else
+              echo "status=failure" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "status=not_needed" >> $GITHUB_OUTPUT
+          fi
+
+# ----------------------------------------------------------------------
+# 3. Poll until a code-owner has approved the PR
+#    --> Only runs if security issues are resolved/acknowledged
+# ----------------------------------------------------------------------
+  codeowner-approval:
+    name: codeowner-approval
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' && 
+      (needs.code-security.outputs.has_security_issues == 'false' || 
+       needs.code-security.outputs.issues_acknowledged == 'true')
+    needs: [validate-pr, code-security]
     timeout-minutes: 30
+    outputs:
+      status: ${{ steps.set-approval-status.outputs.status }}
     steps:
       - name: Wait for a code-owner approval
+        id: wait-approval
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
           echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
+          
           for i in $(seq 1 360); do
-            # list reviews → keep last state per reviewer → filter APPROVED
             approved=$(gh api \
               repos/${REPO}/pulls/${PR}/reviews \
               --jq '[group_by(.user.login)[].[-1] | select(.state=="APPROVED")] | length')
             if [[ "$approved" -gt 0 ]]; then
               echo "🎉 code-owner has approved – check succeeds"
+              echo "approved=true" >> $GITHUB_OUTPUT
               exit 0
             fi
             sleep 5
           done
           echo "⌛ timed-out waiting for code-owner approval"
+          echo "approved=false" >> $GITHUB_OUTPUT
           exit 1
+          
+      - name: Set approval status
+        id: set-approval-status
+        if: always()
+        run: |
+          if [[ "${{ steps.wait-approval.outputs.approved }}" == "true" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+
 # ----------------------------------------------------------------------
-# 3. Runs only after the PR is merged into tst ▸ prd branches
+# 4. Runs only after the PR is merged into tst ▸ prd branches
+#    --> Only if security checks passed
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
+    needs: [validate-pr, code-security]
+    outputs:
+      harness_status: ${{ steps.set-harness-status.outputs.status }}
     steps:
        - name: Checkout code
          uses: actions/checkout@v4
@@ -615,10 +1046,10 @@ jobs:
            echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
            echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
            echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+           
        - name: Get PR details from merge commit
          id: pr-info
          run: |
-           # Try to find the PR that was merged using the commit SHA
            PR_NUMBER=$(gh pr list --state merged --search "sha:${{ github.sha }}" --json number --jq '.[0].number // empty')
            
            if [[ -n "$PR_NUMBER" ]]; then
@@ -626,7 +1057,6 @@ jobs:
              echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
              echo "🔗 Found PR: #$PR_NUMBER"
            else
-             # Fallback: try to extract PR number from merge commit message
              COMMIT_MSG="${{ steps.commit-info.outputs.commit_message }}"
              if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
                PR_NUMBER="${BASH_REMATCH[1]}"
@@ -643,31 +1073,64 @@ jobs:
            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
        - name: Trigger Harness Pipeline
+         id: trigger-pipeline
          run: |
            echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
           
+           JOB_STATUSES=$(cat <<EOF
+           {
+             "validate_pr": "${{ needs.validate-pr.outputs.status || 'not_run' }}",
+             "code_security": {
+               "codeql": "${{ needs.code-security.outputs.codeql_status || 'not_run' }}",
+               "copilot": "${{ needs.code-security.outputs.copilot_status || 'not_run' }}",
+               "had_security_issues": "${{ needs.code-security.outputs.has_security_issues || 'false' }}",
+               "issues_acknowledged": "${{ needs.code-security.outputs.issues_acknowledged || 'false' }}"
+             },
+             "workflow_run_id": "${{ github.run_id }}",
+             "workflow_run_number": "${{ github.run_number }}"
+           }
+           EOF
+           )
+          
            RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
              -H "Content-Type: application/json" \
-             -d '{
-               "repository": "${{ github.server_url }}/${{ github.repository }}",
-               "triggered_by": "${{ github.actor }}",
-               "migration_type": "${{ steps.migration-config.outputs.migration_type }}",
-               "environment": "${{ steps.migration-config.outputs.environment }}",
-               "PR_URL": "${{ steps.pr-info.outputs.pr_url }}",
-               "EDB_ID": "${{ vars.EDB_ID }}"
-             }')
+             -d "{
+               \"repository\": \"${{ github.server_url }}/${{ github.repository }}\",
+               \"triggered_by\": \"${{ github.actor }}\",
+               \"migration_type\": \"${{ steps.migration-config.outputs.migration_type }}\",
+               \"environment\": \"${{ steps.migration-config.outputs.environment }}\",
+               \"PR_URL\": \"${{ steps.pr-info.outputs.pr_url }}\",
+               \"EDB_ID\": \"${{ vars.EDB_ID }}\",
+               \"job_statuses\": $JOB_STATUSES,
+               \"commit_sha\": \"${{ github.sha }}\",
+               \"commit_author\": \"${{ steps.commit-info.outputs.commit_author }}\",
+               \"branch_name\": \"${{ github.ref_name }}\"
+             }")
           
            HTTP_CODE="${RESPONSE: -3}"
            RESPONSE_BODY="${RESPONSE%???}"
          
            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
              echo "✅ Successfully triggered Harness pipeline"
+             echo "triggered=true" >> $GITHUB_OUTPUT
              if [[ -n "${{ steps.pr-info.outputs.pr_url }}" ]]; then
                echo "🔗 Related PR: ${{ steps.pr-info.outputs.pr_url }}"
              fi
            else
              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
+             echo "triggered=false" >> $GITHUB_OUTPUT
+             echo "Response: $RESPONSE_BODY"
              exit 1
+           fi
+           
+       - name: Set Harness status
+         id: set-harness-status
+         if: always()
+         run: |
+           if [[ "${{ steps.trigger-pipeline.outputs.triggered }}" == "true" ]]; then
+             echo "status=success" >> $GITHUB_OUTPUT
+           else
+             echo "status=failure" >> $GITHUB_OUTPUT
            fi
 
 
