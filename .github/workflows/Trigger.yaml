@@ -989,7 +989,7 @@ jobs:
 
 # ----------------------------------------------------------------------
 # 4. Runs only after the PR is merged into tst ▸ prd branches
-#    --> Checks previous PR workflow status instead of using needs
+#    --> Uses head_sha to find previous PR workflow run (more reliable)
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
@@ -1015,39 +1015,41 @@ jobs:
              PR_NUMBER="${BASH_REMATCH[1]}"
              echo "🔗 Found PR: #$PR_NUMBER"
            else
-             echo "❌ Could not extract PR number from merge commit"
+             echo "❌ Could not extract PR number from merge commit: $COMMIT_MSG"
              exit 1
            fi
            
-           # Get the PR workflow runs for this repository
            REPO="${{ github.repository }}"
            
-           # First get all recent workflow runs
-           echo "📊 Getting recent workflow runs..."
-           ALL_RUNS=$(gh api "repos/$REPO/actions/runs" --paginate --jq '.workflow_runs')
+           # Get PR information to get the head SHA (more reliable than filtering by PR number)
+           echo "📊 Getting PR information..."
+           PR_INFO=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+           HEAD_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
+           PR_HEAD_REF=$(echo "$PR_INFO" | jq -r '.head.ref')
            
-           # Filter runs for this PR and this workflow
-           echo "📊 Filtering runs for PR #$PR_NUMBER and workflow 'Branch Protection and Pipeline Trigger'..."
-           MATCHING_RUNS=$(echo "$ALL_RUNS" | jq --arg pr "$PR_NUMBER" --arg workflow_name "Branch Protection and Pipeline Trigger" '
-             [.[] | select(
-               .event == "pull_request" and 
-               .name == $workflow_name and
-               (.pull_requests[]?.number == ($pr | tonumber))
-             )] | sort_by(.run_number) | reverse'
-           )
+           echo "📊 PR #$PR_NUMBER head SHA: $HEAD_SHA"
+           echo "📊 PR #$PR_NUMBER head ref: $PR_HEAD_REF"
            
-           if [[ $(echo "$MATCHING_RUNS" | jq 'length') -eq 0 ]]; then
-             echo "❌ No PR workflow run found for PR #$PR_NUMBER"
+           # Find workflow runs with matching head_sha (this is the most reliable method)
+           echo "📊 Searching for workflow runs with head SHA: $HEAD_SHA"
+           MATCHING_RUNS=$(gh api "repos/$REPO/actions/runs" --paginate \
+             --jq --arg head_sha "$HEAD_SHA" --arg workflow_name "Branch Protection and Pipeline Trigger" \
+             '.workflow_runs[] | select(.head_sha == $head_sha and .name == $workflow_name and .event == "pull_request")')
+           
+           if [[ -z "$MATCHING_RUNS" ]]; then
+             echo "❌ No workflow run found for head SHA: $HEAD_SHA"
+             echo "📊 Available recent runs:"
+             gh api "repos/$REPO/actions/runs" --jq '.workflow_runs[0:5] | .[] | {name: .name, event: .event, head_sha: .head_sha, conclusion: .conclusion}'
              exit 1
            fi
            
-           # Get the latest matching run
-           LATEST_RUN=$(echo "$MATCHING_RUNS" | jq '.[0]')
+           # Get the latest matching run (in case there are multiple)
+           LATEST_RUN=$(echo "$MATCHING_RUNS" | jq -s 'sort_by(.run_number) | reverse | .[0]')
            WORKFLOW_ID=$(echo "$LATEST_RUN" | jq -r '.id')
            WORKFLOW_CONCLUSION=$(echo "$LATEST_RUN" | jq -r '.conclusion')
            
-           echo "📊 PR Workflow ID: $WORKFLOW_ID"
-           echo "📊 PR Workflow Conclusion: $WORKFLOW_CONCLUSION"
+           echo "📊 Found workflow run ID: $WORKFLOW_ID"
+           echo "📊 Workflow conclusion: $WORKFLOW_CONCLUSION"
            
            if [[ "$WORKFLOW_CONCLUSION" != "success" ]]; then
              echo "❌ PR workflow was not successful: $WORKFLOW_CONCLUSION"
@@ -1074,6 +1076,7 @@ jobs:
              echo "validate_pr_status=$VALIDATE_PR_STATUS" >> $GITHUB_OUTPUT
              echo "code_security_status=$CODE_SECURITY_STATUS" >> $GITHUB_OUTPUT
              echo "codeowner_approval_status=$CODEOWNER_APPROVAL_STATUS" >> $GITHUB_OUTPUT
+             echo "workflow_run_id=$WORKFLOW_ID" >> $GITHUB_OUTPUT
            else
              echo "❌ PR checks did not all pass:"
              echo "   validate-pr: $VALIDATE_PR_STATUS"
@@ -1132,7 +1135,8 @@ jobs:
              "codeowner_approval": "${{ steps.check-pr-status.outputs.codeowner_approval_status }}",
              "workflow_run_id": "${{ github.run_id }}",
              "workflow_run_number": "${{ github.run_number }}",
-             "pr_number": "${{ steps.check-pr-status.outputs.pr_number }}"
+             "pr_number": "${{ steps.check-pr-status.outputs.pr_number }}",
+             "pr_workflow_run_id": "${{ steps.check-pr-status.outputs.workflow_run_id }}"
            }
            EOF
            )
@@ -1175,4 +1179,3 @@ jobs:
            else
              echo "status=failure" >> $GITHUB_OUTPUT
            fi
-
