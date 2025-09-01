@@ -670,6 +670,8 @@
 #              exit 1
 #            fi
 # .github/workflows/protected-pr.yml
+# .github/workflows/protected-pr.yml
+# .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
   pull_request:
@@ -771,13 +773,13 @@ jobs:
           sleep 10
           
           # Get CodeQL alerts for this repository
-          ALERTS=$(gh api repos/$REPO/code-scanning/alerts \
+          ALERTS=$(gh api "repos/$REPO/code-scanning/alerts" \
             --jq '[.[] | select(.state == "open" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
           # Get alerts introduced by this PR
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
-          NEW_ALERTS=$(gh api repos/$REPO/code-scanning/alerts \
+          NEW_ALERTS=$(gh api "repos/$REPO/code-scanning/alerts" \
             --jq --arg head_sha "$HEAD_SHA" '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == $head_sha and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
           echo "Total open high/critical alerts: $ALERTS"
@@ -788,7 +790,7 @@ jobs:
             echo "❌ Found $NEW_ALERTS new high/critical security issues in this PR"
             
             # Get detailed alert information
-            gh api repos/$REPO/code-scanning/alerts \
+            gh api "repos/$REPO/code-scanning/alerts" \
               --jq --arg head_sha "$HEAD_SHA" '.[] | select(.state == "open" and .most_recent_instance.commit_sha == $head_sha and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location, url: .html_url}' \
               > codeql_issues.json 2>/dev/null || echo "[]" > codeql_issues.json
             
@@ -881,11 +883,11 @@ jobs:
           REPO="${{ github.repository }}"
           
           # Check for acknowledgment comment
-          ACKNOWLEDGED=$(gh api repos/$REPO/issues/$PR_NUMBER/comments \
+          ACKNOWLEDGED=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body | contains("/acknowledge-security-issues")) | .user.login' | head -1)
           
           # Check if PR has 'security-issues-acknowledged' label
-          LABEL_EXISTS=$(gh api repos/$REPO/issues/$PR_NUMBER/labels \
+          LABEL_EXISTS=$(gh api "repos/$REPO/issues/$PR_NUMBER/labels" \
             --jq '.[] | select(.name == "security-issues-acknowledged") | .name' | head -1)
           
           if [[ -n "$ACKNOWLEDGED" || -n "$LABEL_EXISTS" ]]; then
@@ -894,7 +896,7 @@ jobs:
             
             # Add label if not present
             if [[ -z "$LABEL_EXISTS" ]]; then
-              gh api repos/$REPO/issues/$PR_NUMBER/labels -f labels='["security-issues-acknowledged"]' || true
+              gh api "repos/$REPO/issues/$PR_NUMBER/labels" -f labels='["security-issues-acknowledged"]' || true
             fi
           else
             echo "acknowledged=false" >> $GITHUB_OUTPUT
@@ -962,8 +964,7 @@ jobs:
           echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
           
           for i in $(seq 1 360); do
-            approved=$(gh api \
-              repos/${REPO}/pulls/${PR}/reviews \
+            approved=$(gh api "repos/$REPO/pulls/$PR/reviews" \
               --jq '[group_by(.user.login)[].[-1] | select(.state=="APPROVED")] | length')
             if [[ "$approved" -gt 0 ]]; then
               echo "🎉 code-owner has approved – check succeeds"
@@ -1018,18 +1019,32 @@ jobs:
              exit 1
            fi
            
-           # Get the PR workflow runs for this PR
+           # Get the PR workflow runs for this repository
            REPO="${{ github.repository }}"
-           WORKFLOW_RUNS=$(gh api repos/$REPO/actions/runs \
-             --jq --arg pr "$PR_NUMBER" '[.workflow_runs[] | select(.event == "pull_request" and (.pull_requests[]?.number == ($pr | tonumber))) | select(.name == "Branch Protection and Pipeline Trigger")] | sort_by(.run_number) | reverse | .[0]')
            
-           if [[ -z "$WORKFLOW_RUNS" ]]; then
+           # First get all recent workflow runs
+           echo "📊 Getting recent workflow runs..."
+           ALL_RUNS=$(gh api "repos/$REPO/actions/runs" --paginate --jq '.workflow_runs')
+           
+           # Filter runs for this PR and this workflow
+           echo "📊 Filtering runs for PR #$PR_NUMBER and workflow 'Branch Protection and Pipeline Trigger'..."
+           MATCHING_RUNS=$(echo "$ALL_RUNS" | jq --arg pr "$PR_NUMBER" --arg workflow_name "Branch Protection and Pipeline Trigger" '
+             [.[] | select(
+               .event == "pull_request" and 
+               .name == $workflow_name and
+               (.pull_requests[]?.number == ($pr | tonumber))
+             )] | sort_by(.run_number) | reverse'
+           )
+           
+           if [[ $(echo "$MATCHING_RUNS" | jq 'length') -eq 0 ]]; then
              echo "❌ No PR workflow run found for PR #$PR_NUMBER"
              exit 1
            fi
            
-           WORKFLOW_ID=$(echo "$WORKFLOW_RUNS" | jq -r '.id')
-           WORKFLOW_CONCLUSION=$(echo "$WORKFLOW_RUNS" | jq -r '.conclusion')
+           # Get the latest matching run
+           LATEST_RUN=$(echo "$MATCHING_RUNS" | jq '.[0]')
+           WORKFLOW_ID=$(echo "$LATEST_RUN" | jq -r '.id')
+           WORKFLOW_CONCLUSION=$(echo "$LATEST_RUN" | jq -r '.conclusion')
            
            echo "📊 PR Workflow ID: $WORKFLOW_ID"
            echo "📊 PR Workflow Conclusion: $WORKFLOW_CONCLUSION"
@@ -1040,7 +1055,8 @@ jobs:
            fi
            
            # Get individual job statuses from the PR workflow
-           JOBS=$(gh api repos/$REPO/actions/runs/$WORKFLOW_ID/jobs --jq '.jobs')
+           echo "📊 Getting job statuses from workflow run..."
+           JOBS=$(gh api "repos/$REPO/actions/runs/$WORKFLOW_ID/jobs" --jq '.jobs')
            
            VALIDATE_PR_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "validate-pr") | .conclusion')
            CODE_SECURITY_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "code-security") | .conclusion')
@@ -1159,3 +1175,4 @@ jobs:
            else
              echo "status=failure" >> $GITHUB_OUTPUT
            fi
+
