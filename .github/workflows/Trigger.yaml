@@ -669,7 +669,6 @@
 #              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
 #              exit 1
 #            fi
-
 # .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
@@ -758,7 +757,7 @@ jobs:
         id: codeql-analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:python,javascript,yaml"
+          category: "/language:python"
           
       - name: Check for CodeQL Security Issues
         id: check-security-issues
@@ -989,19 +988,83 @@ jobs:
 
 # ----------------------------------------------------------------------
 # 4. Runs only after the PR is merged into tst ▸ prd branches
-#    --> Only if security checks passed
+#    --> Checks previous PR workflow status instead of using needs
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
-    needs: [validate-pr, code-security]
     outputs:
       harness_status: ${{ steps.set-harness-status.outputs.status }}
     steps:
        - name: Checkout code
          uses: actions/checkout@v4
+
+       - name: Check Previous PR Workflow Status
+         id: check-pr-status
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+         run: |
+           echo "🔍 Checking status of previous PR workflow..."
+           
+           # Get the merge commit PR number
+           COMMIT_MSG=$(git log -1 --pretty=%B | head -1)
+           if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
+             PR_NUMBER="${BASH_REMATCH[1]}"
+             echo "🔗 Found PR: #$PR_NUMBER"
+           else
+             echo "❌ Could not extract PR number from merge commit"
+             exit 1
+           fi
+           
+           # Get the PR workflow runs for this PR
+           REPO="${{ github.repository }}"
+           WORKFLOW_RUNS=$(gh api repos/$REPO/actions/runs \
+             --jq --arg pr "$PR_NUMBER" '[.workflow_runs[] | select(.event == "pull_request" and (.pull_requests[]?.number == ($pr | tonumber))) | select(.name == "Branch Protection and Pipeline Trigger")] | sort_by(.run_number) | reverse | .[0]')
+           
+           if [[ -z "$WORKFLOW_RUNS" ]]; then
+             echo "❌ No PR workflow run found for PR #$PR_NUMBER"
+             exit 1
+           fi
+           
+           WORKFLOW_ID=$(echo "$WORKFLOW_RUNS" | jq -r '.id')
+           WORKFLOW_CONCLUSION=$(echo "$WORKFLOW_RUNS" | jq -r '.conclusion')
+           
+           echo "📊 PR Workflow ID: $WORKFLOW_ID"
+           echo "📊 PR Workflow Conclusion: $WORKFLOW_CONCLUSION"
+           
+           if [[ "$WORKFLOW_CONCLUSION" != "success" ]]; then
+             echo "❌ PR workflow was not successful: $WORKFLOW_CONCLUSION"
+             exit 1
+           fi
+           
+           # Get individual job statuses from the PR workflow
+           JOBS=$(gh api repos/$REPO/actions/runs/$WORKFLOW_ID/jobs --jq '.jobs')
+           
+           VALIDATE_PR_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "validate-pr") | .conclusion')
+           CODE_SECURITY_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "code-security") | .conclusion')
+           CODEOWNER_APPROVAL_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "codeowner-approval") | .conclusion')
+           
+           echo "✅ validate-pr: $VALIDATE_PR_STATUS"
+           echo "✅ code-security: $CODE_SECURITY_STATUS"
+           echo "✅ codeowner-approval: $CODEOWNER_APPROVAL_STATUS"
+           
+           # Check that all required jobs succeeded
+           if [[ "$VALIDATE_PR_STATUS" == "success" && "$CODE_SECURITY_STATUS" == "success" && "$CODEOWNER_APPROVAL_STATUS" == "success" ]]; then
+             echo "🎉 All PR checks passed! Proceeding with Harness pipeline trigger"
+             echo "pr_checks_passed=true" >> $GITHUB_OUTPUT
+             echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+             echo "validate_pr_status=$VALIDATE_PR_STATUS" >> $GITHUB_OUTPUT
+             echo "code_security_status=$CODE_SECURITY_STATUS" >> $GITHUB_OUTPUT
+             echo "codeowner_approval_status=$CODEOWNER_APPROVAL_STATUS" >> $GITHUB_OUTPUT
+           else
+             echo "❌ PR checks did not all pass:"
+             echo "   validate-pr: $VALIDATE_PR_STATUS"
+             echo "   code-security: $CODE_SECURITY_STATUS" 
+             echo "   codeowner-approval: $CODEOWNER_APPROVAL_STATUS"
+             exit 1
+           fi
         
        - name: Determine migration configuration
          id: migration-config
@@ -1029,25 +1092,10 @@ jobs:
        - name: Get PR details from merge commit
          id: pr-info
          run: |
-           PR_NUMBER=$(gh pr list --state merged --search "sha:${{ github.sha }}" --json number --jq '.[0].number // empty')
-           
-           if [[ -n "$PR_NUMBER" ]]; then
-             echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-             echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
-             echo "🔗 Found PR: #$PR_NUMBER"
-           else
-             COMMIT_MSG="${{ steps.commit-info.outputs.commit_message }}"
-             if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
-               PR_NUMBER="${BASH_REMATCH[1]}"
-               echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-               echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
-               echo "🔗 Extracted PR from commit message: #$PR_NUMBER"
-             else
-               echo "pr_number=" >> $GITHUB_OUTPUT
-               echo "pr_url=" >> $GITHUB_OUTPUT
-               echo "⚠️ Could not determine PR number"
-             fi
-           fi
+           PR_NUMBER="${{ steps.check-pr-status.outputs.pr_number }}"
+           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+           echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
+           echo "🔗 Using PR: #$PR_NUMBER"
          env:
            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
@@ -1058,15 +1106,17 @@ jobs:
           
            JOB_STATUSES=$(cat <<EOF
            {
-             "validate_pr": "${{ needs.validate-pr.outputs.status || 'not_run' }}",
+             "validate_pr": "${{ steps.check-pr-status.outputs.validate_pr_status }}",
              "code_security": {
-               "codeql": "${{ needs.code-security.outputs.codeql_status || 'not_run' }}",
-               "copilot_autofix": "${{ needs.code-security.outputs.copilot_status || 'not_run' }}",
-               "had_security_issues": "${{ needs.code-security.outputs.has_security_issues || 'false' }}",
-               "issues_acknowledged": "${{ needs.code-security.outputs.issues_acknowledged || 'false' }}"
+               "codeql": "${{ steps.check-pr-status.outputs.code_security_status }}",
+               "copilot_autofix": "completed_in_pr",
+               "had_security_issues": "checked_in_pr",
+               "issues_acknowledged": "resolved_in_pr"
              },
+             "codeowner_approval": "${{ steps.check-pr-status.outputs.codeowner_approval_status }}",
              "workflow_run_id": "${{ github.run_id }}",
-             "workflow_run_number": "${{ github.run_number }}"
+             "workflow_run_number": "${{ github.run_number }}",
+             "pr_number": "${{ steps.check-pr-status.outputs.pr_number }}"
            }
            EOF
            )
@@ -1092,9 +1142,7 @@ jobs:
            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
              echo "✅ Successfully triggered Harness pipeline"
              echo "triggered=true" >> $GITHUB_OUTPUT
-             if [[ -n "${{ steps.pr-info.outputs.pr_url }}" ]]; then
-               echo "🔗 Related PR: ${{ steps.pr-info.outputs.pr_url }}"
-             fi
+             echo "🔗 Related PR: ${{ steps.pr-info.outputs.pr_url }}"
            else
              echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
              echo "triggered=false" >> $GITHUB_OUTPUT
