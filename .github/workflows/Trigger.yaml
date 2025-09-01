@@ -672,6 +672,7 @@
 # .github/workflows/protected-pr.yml
 # .github/workflows/protected-pr.yml
 # .github/workflows/protected-pr.yml
+# .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
   pull_request:
@@ -780,7 +781,7 @@ jobs:
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
           NEW_ALERTS=$(gh api "repos/$REPO/code-scanning/alerts" \
-            --jq --arg head_sha "$HEAD_SHA" '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == $head_sha and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
+            --jq '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == "'$HEAD_SHA'" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
           echo "Total open high/critical alerts: $ALERTS"
           echo "New alerts in this PR: $NEW_ALERTS"
@@ -791,7 +792,7 @@ jobs:
             
             # Get detailed alert information
             gh api "repos/$REPO/code-scanning/alerts" \
-              --jq --arg head_sha "$HEAD_SHA" '.[] | select(.state == "open" and .most_recent_instance.commit_sha == $head_sha and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location, url: .html_url}' \
+              --jq '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == "'$HEAD_SHA'" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location, url: .html_url}]' \
               > codeql_issues.json 2>/dev/null || echo "[]" > codeql_issues.json
             
             echo "## 🚨 CodeQL Security Issues Found" >> $GITHUB_STEP_SUMMARY
@@ -800,16 +801,7 @@ jobs:
             
             # Format issues for summary
             if [[ -s codeql_issues.json ]]; then
-              while IFS= read -r issue; do
-                RULE=$(echo "$issue" | jq -r '.rule // "Unknown Rule"')
-                SEVERITY=$(echo "$issue" | jq -r '.severity // "unknown"')
-                LOCATION=$(echo "$issue" | jq -r '.location.path + ":" + (.location.start_line | tostring) // "unknown location"')
-                URL=$(echo "$issue" | jq -r '.url // ""')
-                echo "- **$SEVERITY**: $RULE in \`$LOCATION\`" >> $GITHUB_STEP_SUMMARY
-                if [[ -n "$URL" && "$URL" != "null" ]]; then
-                  echo "  - [View Alert]($URL)" >> $GITHUB_STEP_SUMMARY
-                fi
-              done < codeql_issues.json
+              jq -r '.[] | "- **" + (.severity // "unknown") + "**: " + (.rule // "Unknown Rule") + " in `" + ((.location.path // "Unknown") + ":" + (.location.start_line | tostring)) + "`"' codeql_issues.json >> $GITHUB_STEP_SUMMARY
             fi
             
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -989,7 +981,7 @@ jobs:
 
 # ----------------------------------------------------------------------
 # 4. Runs only after the PR is merged into tst ▸ prd branches
-#    --> Uses head_sha to find previous PR workflow run (more reliable)
+#    --> Fixed gh api commands to work without --arg flag
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
@@ -1021,7 +1013,7 @@ jobs:
            
            REPO="${{ github.repository }}"
            
-           # Get PR information to get the head SHA (more reliable than filtering by PR number)
+           # Get PR information to get the head SHA
            echo "📊 Getting PR information..."
            PR_INFO=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
            HEAD_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
@@ -1030,15 +1022,14 @@ jobs:
            echo "📊 PR #$PR_NUMBER head SHA: $HEAD_SHA"
            echo "📊 PR #$PR_NUMBER head ref: $PR_HEAD_REF"
            
-           # Find workflow runs with matching head_sha (this is the most reliable method)
+           # Find workflow runs with matching head_sha - Fixed to embed variables directly in jq
            echo "📊 Searching for workflow runs with head SHA: $HEAD_SHA"
            MATCHING_RUNS=$(gh api "repos/$REPO/actions/runs" --paginate \
-             --jq --arg head_sha "$HEAD_SHA" --arg workflow_name "Branch Protection and Pipeline Trigger" \
-             '.workflow_runs[] | select(.head_sha == $head_sha and .name == $workflow_name and .event == "pull_request")')
+             --jq '.workflow_runs[] | select(.head_sha == "'$HEAD_SHA'" and .name == "Branch Protection and Pipeline Trigger" and .event == "pull_request")')
            
            if [[ -z "$MATCHING_RUNS" ]]; then
              echo "❌ No workflow run found for head SHA: $HEAD_SHA"
-             echo "📊 Available recent runs:"
+             echo "📊 Debugging: Available recent runs:"
              gh api "repos/$REPO/actions/runs" --jq '.workflow_runs[0:5] | .[] | {name: .name, event: .event, head_sha: .head_sha, conclusion: .conclusion}'
              exit 1
            fi
@@ -1179,3 +1170,4 @@ jobs:
            else
              echo "status=failure" >> $GITHUB_OUTPUT
            fi
+
