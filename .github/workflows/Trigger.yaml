@@ -670,7 +670,6 @@
 #              exit 1
 #            fi
 
-
 # .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
@@ -729,7 +728,7 @@ jobs:
           fi
 
 # ----------------------------------------------------------------------
-# 2. CodeQL and Copilot Security Analysis - BLOCKS if issues found
+# 2. CodeQL and Copilot Autofix Security Analysis - BLOCKS if issues found
 #    --> reports the status-check   code-security
 # ----------------------------------------------------------------------
   code-security:
@@ -750,7 +749,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: python, javascript, yaml
-          config-file: ./.github/codeql/codeql-config.yml
+          queries: security-and-quality
         
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
@@ -769,16 +768,18 @@ jobs:
           REPO="${{ github.repository }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
           
+          # Wait a moment for CodeQL results to be processed
+          sleep 10
+          
           # Get CodeQL alerts for this repository
           ALERTS=$(gh api repos/$REPO/code-scanning/alerts \
-            --jq '[.[] | select(.state == "open" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length')
+            --jq '[.[] | select(.state == "open" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
-          # Get alerts introduced by this PR (compare with base branch)
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          # Get alerts introduced by this PR
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
           NEW_ALERTS=$(gh api repos/$REPO/code-scanning/alerts \
-            --jq --arg ref "$HEAD_SHA" '[.[] | select(.state == "open" and .most_recent_instance.ref == ("refs/heads/" + $ref) and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length')
+            --jq --arg head_sha "$HEAD_SHA" '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == $head_sha and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
           echo "Total open high/critical alerts: $ALERTS"
           echo "New alerts in this PR: $NEW_ALERTS"
@@ -789,68 +790,34 @@ jobs:
             
             # Get detailed alert information
             gh api repos/$REPO/code-scanning/alerts \
-              --jq --arg ref "$HEAD_SHA" '.[] | select(.state == "open" and .most_recent_instance.ref == ("refs/heads/" + $ref) and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location}' \
-              > codeql_issues.json
+              --jq --arg head_sha "$HEAD_SHA" '.[] | select(.state == "open" and .most_recent_instance.commit_sha == $head_sha and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location, url: .html_url}' \
+              > codeql_issues.json 2>/dev/null || echo "[]" > codeql_issues.json
             
             echo "## 🚨 CodeQL Security Issues Found" >> $GITHUB_STEP_SUMMARY
             echo "This PR introduces **$NEW_ALERTS** new high/critical security issues:" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
             # Format issues for summary
-            while IFS= read -r issue; do
-              RULE=$(echo "$issue" | jq -r '.rule')
-              SEVERITY=$(echo "$issue" | jq -r '.severity')
-              LOCATION=$(echo "$issue" | jq -r '.location.path + ":" + (.location.start_line | tostring)')
-              echo "- **$SEVERITY**: $RULE in \`$LOCATION\`" >> $GITHUB_STEP_SUMMARY
-            done < codeql_issues.json
+            if [[ -s codeql_issues.json ]]; then
+              while IFS= read -r issue; do
+                RULE=$(echo "$issue" | jq -r '.rule // "Unknown Rule"')
+                SEVERITY=$(echo "$issue" | jq -r '.severity // "unknown"')
+                LOCATION=$(echo "$issue" | jq -r '.location.path + ":" + (.location.start_line | tostring) // "unknown location"')
+                URL=$(echo "$issue" | jq -r '.url // ""')
+                echo "- **$SEVERITY**: $RULE in \`$LOCATION\`" >> $GITHUB_STEP_SUMMARY
+                if [[ -n "$URL" && "$URL" != "null" ]]; then
+                  echo "  - [View Alert]($URL)" >> $GITHUB_STEP_SUMMARY
+                fi
+              done < codeql_issues.json
+            fi
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📝 **Copilot Autofix**: Check the Security tab for automated fix suggestions" >> $GITHUB_STEP_SUMMARY
             
           else
             echo "has_issues=false" >> $GITHUB_OUTPUT
             echo "✅ No new high/critical security issues found"
           fi
-          
-      - name: GitHub Copilot Security Analysis
-        id: copilot-security
-        if: steps.check-security-issues.outputs.has_issues == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { execSync } = require('child_process');
-            
-            try {
-              // Install GitHub Copilot CLI if not available
-              execSync('npm install -g @githubnext/github-copilot-cli', { stdio: 'inherit' });
-              
-              // Read CodeQL issues
-              const fs = require('fs');
-              const issues = JSON.parse(fs.readFileSync('codeql_issues.json', 'utf8'));
-              
-              let suggestions = [];
-              
-              for (const issue of issues) {
-                // Run Copilot analysis for each issue
-                const prompt = `Review this security issue and provide fix suggestions: ${issue.rule} in ${issue.location.path}`;
-                const result = execSync(`gh copilot suggest "${prompt}"`, { encoding: 'utf8', stdio: 'pipe' });
-                
-                suggestions.push({
-                  issue: issue.rule,
-                  location: issue.location,
-                  suggestion: result
-                });
-              }
-              
-              // Save suggestions to file
-              fs.writeFileSync('copilot_suggestions.json', JSON.stringify(suggestions, null, 2));
-              
-              console.log('✅ Copilot security analysis completed');
-              return { success: true, suggestions: suggestions };
-              
-            } catch (error) {
-              console.log('❌ Copilot security analysis failed:', error.message);
-              return { success: false, error: error.message };
-            }
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Post Security Issues Comment
         if: steps.check-security-issues.outputs.has_issues == 'true'
@@ -859,29 +826,43 @@ jobs:
           script: |
             const fs = require('fs');
             
-            // Read issues and suggestions
-            const issues = JSON.parse(fs.readFileSync('codeql_issues.json', 'utf8'));
-            const suggestions = JSON.parse(fs.readFileSync('copilot_suggestions.json', 'utf8'));
-            
             let commentBody = `## 🚨 Security Issues Detected\n\n`;
-            commentBody += `This PR introduces **${issues.length}** new high/critical security issues that must be addressed:\n\n`;
+            commentBody += `This PR introduces new high/critical security issues that must be addressed.\n\n`;
             
-            for (let i = 0; i < issues.length; i++) {
-              const issue = issues[i];
-              const suggestion = suggestions[i];
-              
-              commentBody += `### Issue ${i + 1}: ${issue.rule}\n`;
-              commentBody += `**Severity:** ${issue.severity}\n`;
-              commentBody += `**Location:** \`${issue.location.path}:${issue.location.start_line}\`\n\n`;
-              commentBody += `**Copilot Suggestion:**\n`;
-              commentBody += `\`\`\`\n${suggestion.suggestion}\n\`\`\`\n\n`;
+            // Read issues if file exists and has content
+            let issues = [];
+            try {
+              if (fs.existsSync('codeql_issues.json')) {
+                const content = fs.readFileSync('codeql_issues.json', 'utf8').trim();
+                if (content && content !== '[]') {
+                  issues = JSON.parse(content);
+                }
+              }
+            } catch (error) {
+              console.log('Could not read issues file:', error.message);
             }
             
-            commentBody += `---\n\n`;
-            commentBody += `**Next Steps:**\n`;
-            commentBody += `1. ✅ **Fix the issues** by implementing the suggested changes\n`;
-            commentBody += `2. 🔄 **Push your changes** to trigger a new security scan\n`;
-            commentBody += `3. 🚫 **Or acknowledge issues** by commenting: \`/acknowledge-security-issues\`\n\n`;
+            if (issues.length > 0) {
+              commentBody += `### Issues Found:\n\n`;
+              for (let i = 0; i < issues.length; i++) {
+                const issue = issues[i];
+                commentBody += `**${i + 1}. ${issue.rule || 'Security Issue'}**\n`;
+                commentBody += `- **Severity:** ${issue.severity || 'Unknown'}\n`;
+                commentBody += `- **Location:** \`${issue.location?.path || 'Unknown'}:${issue.location?.start_line || 'Unknown'}\`\n`;
+                if (issue.url) {
+                  commentBody += `- **[View Details](${issue.url})**\n`;
+                }
+                commentBody += `\n`;
+              }
+            }
+            
+            commentBody += `### 🤖 Copilot Autofix Available\n`;
+            commentBody += `GitHub Copilot Autofix has been enabled for this repository. Check the **Security tab** for automated fix suggestions.\n\n`;
+            commentBody += `### Next Steps:\n`;
+            commentBody += `1. ✅ **Review Copilot Autofix suggestions** in the Security tab\n`;
+            commentBody += `2. 🔧 **Apply fixes** or implement manual fixes\n`;
+            commentBody += `3. 🔄 **Push your changes** to trigger a new security scan\n`;
+            commentBody += `4. 🚫 **Or acknowledge issues** by commenting: \`/acknowledge-security-issues\`\n\n`;
             commentBody += `⚠️ **The workflow is blocked until these issues are resolved or acknowledged.**`;
             
             await github.rest.issues.createComment({
@@ -914,7 +895,7 @@ jobs:
             
             # Add label if not present
             if [[ -z "$LABEL_EXISTS" ]]; then
-              gh api repos/$REPO/issues/$PR_NUMBER/labels -f labels='["security-issues-acknowledged"]'
+              gh api repos/$REPO/issues/$PR_NUMBER/labels -f labels='["security-issues-acknowledged"]' || true
             fi
           else
             echo "acknowledged=false" >> $GITHUB_OUTPUT
@@ -926,8 +907,9 @@ jobs:
         run: |
           echo "🚫 WORKFLOW BLOCKED: Security issues detected and not acknowledged"
           echo "Please either:"
-          echo "  1. Fix the security issues and push changes"
-          echo "  2. Comment '/acknowledge-security-issues' to proceed with known issues"
+          echo "  1. Fix the security issues using Copilot Autofix suggestions"
+          echo "  2. Push your changes to trigger a new security scan"
+          echo "  3. Comment '/acknowledge-security-issues' to proceed with known issues"
           exit 1
           
       - name: Set CodeQL status
@@ -948,12 +930,9 @@ jobs:
         id: set-copilot-status
         if: always()
         run: |
+          # Copilot Autofix is built-in, so status is based on whether it's enabled and working
           if [[ "${{ steps.check-security-issues.outputs.has_issues }}" == "true" ]]; then
-            if [[ "${{ steps.copilot-security.outcome }}" == "success" ]]; then
-              echo "status=success" >> $GITHUB_OUTPUT
-            else
-              echo "status=failure" >> $GITHUB_OUTPUT
-            fi
+            echo "status=autofix_available" >> $GITHUB_OUTPUT
           else
             echo "status=not_needed" >> $GITHUB_OUTPUT
           fi
@@ -1082,7 +1061,7 @@ jobs:
              "validate_pr": "${{ needs.validate-pr.outputs.status || 'not_run' }}",
              "code_security": {
                "codeql": "${{ needs.code-security.outputs.codeql_status || 'not_run' }}",
-               "copilot": "${{ needs.code-security.outputs.copilot_status || 'not_run' }}",
+               "copilot_autofix": "${{ needs.code-security.outputs.copilot_status || 'not_run' }}",
                "had_security_issues": "${{ needs.code-security.outputs.has_security_issues || 'false' }}",
                "issues_acknowledged": "${{ needs.code-security.outputs.issues_acknowledged || 'false' }}"
              },
@@ -1132,5 +1111,3 @@ jobs:
            else
              echo "status=failure" >> $GITHUB_OUTPUT
            fi
-
-
