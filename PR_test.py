@@ -1,5 +1,7 @@
-username = "vs5462"
-password ="342ndsjkqkamsdm"
+AWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"
+GITHUB_TOKEN = "ghp_1234567890abcdef1234567890abcdef12345678" 
+API_KEY = "sk-1234567890abcdef1234567890abcdef12345678" 
+
 
 
 test
