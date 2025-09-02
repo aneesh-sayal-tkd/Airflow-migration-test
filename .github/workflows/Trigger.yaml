@@ -675,6 +675,7 @@
 # .github/workflows/protected-pr.yml
 # .github/workflows/protected-pr.yml
 # .github/workflows/protected-pr.yml
+# .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
   pull_request:
@@ -985,7 +986,7 @@ jobs:
 
 # ----------------------------------------------------------------------
 # 4. Runs only after the PR is merged into tst ▸ prd branches
-#    --> Platform approval with 24-hour timeout + Harness trigger
+#    --> Platform approval with 24-hour timeout + Harness trigger (FIXED VERSION)
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
@@ -1189,16 +1190,14 @@ jobs:
            echo "🔄 Checking every $POLL_INTERVAL seconds"
            echo "👥 Waiting for approval from: $PLATFORM_APPROVER_1 OR $PLATFORM_APPROVER_2"
            
+           # Process approval/rejection - FIXED VERSION
            for ((i=1; i<=MAX_ITERATIONS; i++)); do
              echo "🔍 Check $i/$MAX_ITERATIONS - $(date)"
              
              # Get all comments on the issue
              COMMENTS=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" --jq '.')
              
-             # Check for approval or rejection comments from authorized users
-             APPROVAL_FOUND=""
-             REJECTION_FOUND=""
-             
+             # Process each comment
              while IFS= read -r comment; do
                if [[ -z "$comment" || "$comment" == "null" ]]; then
                  continue
@@ -1213,32 +1212,21 @@ jobs:
                  
                  # Check for approval keywords
                  if [[ "$COMMENT_BODY" =~ (approve|approved|lgtm|yes|/approve) ]]; then
-                   APPROVAL_FOUND="$COMMENT_AUTHOR"
-                   break 2
+                   echo "🎉 APPROVED by @$COMMENT_AUTHOR!"
+                   echo "approved=true" >> $GITHUB_OUTPUT
+                   echo "approver=$COMMENT_AUTHOR" >> $GITHUB_OUTPUT
+                   exit 0  # Exit successfully with approval
                  fi
                  
                  # Check for rejection keywords  
                  if [[ "$COMMENT_BODY" =~ (reject|rejected|deny|denied|no|/reject) ]]; then
-                   REJECTION_FOUND="$COMMENT_AUTHOR"
-                   break 2
+                   echo "❌ REJECTED by @$COMMENT_AUTHOR"
+                   echo "approved=false" >> $GITHUB_OUTPUT
+                   echo "rejector=$COMMENT_AUTHOR" >> $GITHUB_OUTPUT
+                   exit 0  # Exit with rejection
                  fi
                fi
              done <<< "$(echo "$COMMENTS" | jq -c '.[]')"
-             
-             # Check results after processing all comments
-             if [[ -n "$APPROVAL_FOUND" ]]; then
-               echo "🎉 APPROVED by @$APPROVAL_FOUND!"
-               echo "approved=true" >> $GITHUB_OUTPUT
-               echo "approver=$APPROVAL_FOUND" >> $GITHUB_OUTPUT
-               break
-             fi
-             
-             if [[ -n "$REJECTION_FOUND" ]]; then
-               echo "❌ REJECTED by @$REJECTION_FOUND"
-               echo "approved=false" >> $GITHUB_OUTPUT
-               echo "rejector=$REJECTION_FOUND" >> $GITHUB_OUTPUT
-               break
-             fi
              
              # Show remaining time
              REMAINING_SECONDS=$((TIMEOUT_SECONDS - (i * POLL_INTERVAL)))
@@ -1249,12 +1237,10 @@ jobs:
              sleep $POLL_INTERVAL
            done
            
-           # Check if we timed out
-           if [[ -z "$APPROVAL_FOUND" && -z "$REJECTION_FOUND" ]]; then
-             echo "⏰ TIMEOUT: No response received within 24 hours"
-             echo "approved=false" >> $GITHUB_OUTPUT
-             echo "timeout=true" >> $GITHUB_OUTPUT
-           fi
+           # If we reach here, we timed out
+           echo "⏰ TIMEOUT: No response received within 24 hours"
+           echo "approved=false" >> $GITHUB_OUTPUT
+           echo "timeout=true" >> $GITHUB_OUTPUT
 
        - name: Close Approval Issue
          if: always()
@@ -1317,8 +1303,10 @@ jobs:
            echo "❌ Platform approval was not granted"
            if [[ "${{ steps.wait-approval.outputs.timeout }}" == "true" ]]; then
              echo "⏰ Reason: 24-hour timeout reached"
-           else
+           elif [[ -n "${{ steps.wait-approval.outputs.rejector }}" ]]; then
              echo "❌ Reason: Explicitly rejected by ${{ steps.wait-approval.outputs.rejector }}"
+           else
+             echo "❌ Reason: Unknown rejection cause"
            fi
            echo "🚫 Harness pipeline trigger cancelled"
            exit 1
