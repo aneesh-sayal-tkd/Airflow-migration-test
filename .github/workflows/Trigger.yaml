@@ -674,6 +674,7 @@
 # .github/workflows/protected-pr.yml
 # .github/workflows/protected-pr.yml
 # .github/workflows/protected-pr.yml
+# .github/workflows/protected-pr.yml
 name: Branch Protection and Pipeline Trigger
 on:
   pull_request:
@@ -890,7 +891,8 @@ jobs:
             
             # Add label if not present
             if [[ -z "$LABEL_EXISTS" ]]; then
-              gh api "repos/$REPO/issues/$PR_NUMBER/labels" -f labels='["security-issues-acknowledged"]' || true
+              gh api "repos/$REPO/issues/$PR_NUMBER/labels" \
+                -f labels[]="security-issues-acknowledged" || true
             fi
           else
             echo "acknowledged=false" >> $GITHUB_OUTPUT
@@ -1223,6 +1225,7 @@ jobs:
                fi
              done <<< "$(echo "$COMMENTS" | jq -c '.[]')"
              
+             # Check results after processing all comments
              if [[ -n "$APPROVAL_FOUND" ]]; then
                echo "🎉 APPROVED by @$APPROVAL_FOUND!"
                echo "approved=true" >> $GITHUB_OUTPUT
@@ -1279,27 +1282,30 @@ jobs:
            gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
              -f body="$FINAL_COMMENT"
            
-           # Close the issue with appropriate label
+           # Close the issue with appropriate labels - FIXED VERSION
            if [[ "${{ steps.wait-approval.outputs.approved }}" == "true" ]]; then
              gh api "repos/$REPO/issues/$ISSUE_NUMBER" \
                -f state="closed" \
                -f state_reason="completed"
              
-             # Add approved label
+             # Add approved labels - CORRECTED SYNTAX
              gh api "repos/$REPO/issues/$ISSUE_NUMBER/labels" \
-               -f labels='["platform-approved","deployment"]' || true
+               -f labels[]="platform-approved" \
+               -f labels[]="deployment" || true
            else
              gh api "repos/$REPO/issues/$ISSUE_NUMBER" \
                -f state="closed" \
                -f state_reason="not_planned"
              
-             # Add rejected/timeout label
+             # Add rejected/timeout labels - CORRECTED SYNTAX
              if [[ "${{ steps.wait-approval.outputs.timeout }}" == "true" ]]; then
                gh api "repos/$REPO/issues/$ISSUE_NUMBER/labels" \
-                 -f labels='["platform-timeout","deployment"]' || true
+                 -f labels[]="platform-timeout" \
+                 -f labels[]="deployment" || true
              else
                gh api "repos/$REPO/issues/$ISSUE_NUMBER/labels" \
-                 -f labels='["platform-rejected","deployment"]' || true
+                 -f labels[]="platform-rejected" \
+                 -f labels[]="deployment" || true
              fi
            fi
            
