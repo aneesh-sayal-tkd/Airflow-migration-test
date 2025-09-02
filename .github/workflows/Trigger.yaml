@@ -1150,11 +1150,12 @@ jobs:
            EOF
            )
            
-           # Create the approval issue
+           # Create the approval issue with proper assignees array - FIXED VERSION
            ISSUE_RESPONSE=$(gh api "repos/$REPO/issues" \
              -f title="$ISSUE_TITLE" \
              -f body="$ISSUE_BODY" \
-             -f assignees="$PLATFORM_APPROVER_1,$PLATFORM_APPROVER_2")
+             -f assignees[]="$PLATFORM_APPROVER_1" \
+             -f assignees[]="$PLATFORM_APPROVER_2")
            
            ISSUE_NUMBER=$(echo "$ISSUE_RESPONSE" | jq -r '.number')
            ISSUE_URL=$(echo "$ISSUE_RESPONSE" | jq -r '.html_url')
@@ -1402,7 +1403,6 @@ jobs:
            else
              echo "status=failure" >> $GITHUB_OUTPUT
            fi
-
 
   # trigger-harness-pipeline:
   #   runs-on: ubuntu-latest
