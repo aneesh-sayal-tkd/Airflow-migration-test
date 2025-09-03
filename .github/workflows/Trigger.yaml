@@ -2,9 +2,10 @@ name: Branch Protection and Pipeline Trigger
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    branches: [tst, prd]
   push:
     branches: [tst, prd]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -65,7 +66,6 @@ jobs:
     needs: validate-pr
     outputs:
       codeql_status: ${{ steps.set-codeql-status.outputs.status }}
-      copilot_status: ${{ steps.set-copilot-status.outputs.status }}
       has_security_issues: ${{ steps.check-security-issues.outputs.has_issues }}
       issues_acknowledged: ${{ steps.check-acknowledgment.outputs.acknowledged }}
     steps:
@@ -95,101 +95,24 @@ jobs:
           REPO="${{ github.repository }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
           
-          # Wait a moment for CodeQL results to be processed
           sleep 10
           
-          # Get CodeQL alerts for this repository
           ALERTS=$(gh api "repos/$REPO/code-scanning/alerts" \
             --jq '[.[] | select(.state == "open" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
-          # Get alerts introduced by this PR
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
           NEW_ALERTS=$(gh api "repos/$REPO/code-scanning/alerts" \
             --jq '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == "'$HEAD_SHA'" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
-          echo "Total open high/critical alerts: $ALERTS"
-          echo "New alerts in this PR: $NEW_ALERTS"
-          
           if [[ "$NEW_ALERTS" -gt 0 ]]; then
             echo "has_issues=true" >> $GITHUB_OUTPUT
-            echo "❌ Found $NEW_ALERTS new high/critical security issues in this PR"
-            
-            # Get detailed alert information
-            gh api "repos/$REPO/code-scanning/alerts" \
-              --jq '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == "'$HEAD_SHA'" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")) | {rule: .rule.description, severity: .rule.security_severity_level, location: .most_recent_instance.location, url: .html_url}]' \
-              > codeql_issues.json 2>/dev/null || echo "[]" > codeql_issues.json
-            
-            echo "## 🚨 CodeQL Security Issues Found" >> $GITHUB_STEP_SUMMARY
-            echo "This PR introduces **$NEW_ALERTS** new high/critical security issues:" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            # Format issues for summary
-            if [[ -s codeql_issues.json ]]; then
-              jq -r '.[] | "- **" + (.severity // "unknown") + "**: " + (.rule // "Unknown Rule") + " in `" + ((.location.path // "Unknown") + ":" + (.location.start_line | tostring)) + "`"' codeql_issues.json >> $GITHUB_STEP_SUMMARY
-            fi
-            
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "📝 **Copilot Autofix**: Check the Security tab for automated fix suggestions" >> $GITHUB_STEP_SUMMARY
-            
+            echo "❌ Found $NEW_ALERTS new high/critical security issues"
           else
             echo "has_issues=false" >> $GITHUB_OUTPUT
             echo "✅ No new high/critical security issues found"
           fi
           
-      - name: Post Security Issues Comment
-        if: steps.check-security-issues.outputs.has_issues == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            
-            let commentBody = `## 🚨 Security Issues Detected\n\n`;
-            commentBody += `This PR introduces new high/critical security issues that must be addressed.\n\n`;
-            
-            // Read issues if file exists and has content
-            let issues = [];
-            try {
-              if (fs.existsSync('codeql_issues.json')) {
-                const content = fs.readFileSync('codeql_issues.json', 'utf8').trim();
-                if (content && content !== '[]') {
-                  issues = JSON.parse(content);
-                }
-              }
-            } catch (error) {
-              console.log('Could not read issues file:', error.message);
-            }
-            
-            if (issues.length > 0) {
-              commentBody += `### Issues Found:\n\n`;
-              for (let i = 0; i < issues.length; i++) {
-                const issue = issues[i];
-                commentBody += `**${i + 1}. ${issue.rule || 'Security Issue'}**\n`;
-                commentBody += `- **Severity:** ${issue.severity || 'Unknown'}\n`;
-                commentBody += `- **Location:** `${issue.location?.path || 'Unknown'}:${issue.location?.start_line || 'Unknown'}`\n`;
-                if (issue.url) {
-                  commentBody += `- **[View Details](${issue.url})**\n`;
-                }
-                commentBody += `\n`;
-              }
-            }
-            
-            commentBody += `### 🤖 Copilot Autofix Available\n`;
-            commentBody += `GitHub Copilot Autofix has been enabled for this repository. Check the **Security tab** for automated fix suggestions.\n\n`;
-            commentBody += `### Next Steps:\n`;
-            commentBody += `1. ✅ **Review Copilot Autofix suggestions** in the Security tab\n`;
-            commentBody += `2. 🔧 **Apply fixes** or implement manual fixes\n`;
-            commentBody += `3. 🔄 **Push your changes** to trigger a new security scan\n`;
-            commentBody += `4. 🚫 **Or acknowledge issues** by commenting: \`/acknowledge-security-issues\`\n\n`;
-            commentBody += `⚠️ **The workflow is blocked until these issues are resolved or acknowledged.**`;
-            
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: commentBody
-            });
-            
       - name: Check for Issue Acknowledgment
         id: check-acknowledgment
         if: steps.check-security-issues.outputs.has_issues == 'true'
@@ -199,36 +122,19 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
           
-          # Check for acknowledgment comment
           ACKNOWLEDGED=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body | contains("/acknowledge-security-issues")) | .user.login' | head -1)
           
-          # Check if PR has 'security-issues-acknowledged' label
-          LABEL_EXISTS=$(gh api "repos/$REPO/issues/$PR_NUMBER/labels" \
-            --jq '.[] | select(.name == "security-issues-acknowledged") | .name' | head -1)
-          
-          if [[ -n "$ACKNOWLEDGED" || -n "$LABEL_EXISTS" ]]; then
+          if [[ -n "$ACKNOWLEDGED" ]]; then
             echo "acknowledged=true" >> $GITHUB_OUTPUT
-            echo "✅ Security issues acknowledged by: $ACKNOWLEDGED"
-            
-            # Add label if not present
-            if [[ -z "$LABEL_EXISTS" ]]; then
-              gh api "repos/$REPO/issues/$PR_NUMBER/labels" \
-                -f labels[]="security-issues-acknowledged" || true
-            fi
           else
             echo "acknowledged=false" >> $GITHUB_OUTPUT
-            echo "❌ Security issues not yet acknowledged"
           fi
           
       - name: Block if Security Issues Not Resolved or Acknowledged
         if: steps.check-security-issues.outputs.has_issues == 'true' && steps.check-acknowledgment.outputs.acknowledged == 'false'
         run: |
           echo "🚫 WORKFLOW BLOCKED: Security issues detected and not acknowledged"
-          echo "Please either:"
-          echo "  1. Fix the security issues using Copilot Autofix suggestions"
-          echo "  2. Push your changes to trigger a new security scan"
-          echo "  3. Comment '/acknowledge-security-issues' to proceed with known issues"
           exit 1
           
       - name: Set CodeQL status
@@ -244,20 +150,9 @@ jobs:
           else
             echo "status=failure" >> $GITHUB_OUTPUT
           fi
-          
-      - name: Set Copilot status
-        id: set-copilot-status
-        if: always()
-        run: |
-          # Copilot Autofix is built-in, so status is based on whether it's enabled and working
-          if [[ "${{ steps.check-security-issues.outputs.has_issues }}" == "true" ]]; then
-            echo "status=autofix_available" >> $GITHUB_OUTPUT
-          else
-            echo "status=not_needed" >> $GITHUB_OUTPUT
-          fi
 
 # ----------------------------------------------------------------------
-# 3. Code Owner Approval - Always required for all PRs
+# 3. Code Owner Approval
 # ----------------------------------------------------------------------
   codeowner-approval:
     name: codeowner-approval
@@ -305,106 +200,31 @@ jobs:
           fi
 
 # ----------------------------------------------------------------------
-# 4. Branch Protection Gate - Enforces required checks for ALL PRs
+# 4. Platform Approval Status Check Setup (for PRD only)
 # ----------------------------------------------------------------------
-  branch-protection-gate:
-    name: branch-protection-gate
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    needs: [validate-pr, code-security, codeowner-approval]
-    outputs:
-      status: ${{ steps.enforce-protection.outputs.status }}
-    steps:
-      - name: Enforce Branch Protection Requirements
-        id: enforce-protection
-        run: |
-          echo "🔒 Enforcing branch protection requirements for ${{ github.base_ref }} branch..."
-          
-          # Check that all required jobs passed
-          VALIDATE_STATUS="${{ needs.validate-pr.outputs.status }}"
-          SECURITY_STATUS="${{ needs.code-security.outputs.codeql_status }}"
-          CODEOWNER_STATUS="${{ needs.codeowner-approval.outputs.status }}"
-          
-          echo "📊 Required Check Results:"
-          echo "  ✅ validate-pr: $VALIDATE_STATUS"
-          echo "  ✅ code-security: $SECURITY_STATUS"
-          echo "  ✅ codeowner-approval: $CODEOWNER_STATUS"
-          
-          # Verify all required checks passed
-          FAILED_CHECKS=""
-          
-          if [[ "$VALIDATE_STATUS" != "success" ]]; then
-            echo "❌ validate-pr check failed"
-            FAILED_CHECKS="${FAILED_CHECKS}validate-pr "
-          fi
-          
-          if [[ "$SECURITY_STATUS" != "success" ]]; then
-            echo "❌ code-security check failed"  
-            FAILED_CHECKS="${FAILED_CHECKS}code-security "
-          fi
-          
-          if [[ "$CODEOWNER_STATUS" != "success" ]]; then
-            echo "❌ codeowner-approval check failed"
-            FAILED_CHECKS="${FAILED_CHECKS}codeowner-approval "
-          fi
-          
-          if [[ -n "$FAILED_CHECKS" ]]; then
-            echo "🚫 MERGE BLOCKED: The following required checks failed: $FAILED_CHECKS"
-            echo "⚠️ All branch protection requirements must pass before merge is allowed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          echo "🎉 All required branch protection checks passed for ${{ github.base_ref }} branch!"
-          echo "✅ PR meets all requirements for merging"
-          echo "status=success" >> $GITHUB_OUTPUT
-
-# ----------------------------------------------------------------------
-# 5. Platform Approval Gate - ONLY for production (prd) branch
-# ----------------------------------------------------------------------
-  platform-approval-gate:
-    name: platform-approval-gate
+  platform-approval-setup:
+    name: platform-approval-setup
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'prd'
-    needs: [validate-pr, code-security, codeowner-approval, branch-protection-gate]
-    timeout-minutes: 1440  # 24 hours
+    needs: [validate-pr, code-security, codeowner-approval]
     outputs:
-      status: ${{ steps.platform-approval.outputs.status }}
-      approved: ${{ steps.platform-approval.outputs.approved }}
-      approver: ${{ steps.platform-approval.outputs.approver }}
+      issue_number: ${{ steps.create-approval.outputs.issue_number }}
     steps:
-      - name: Platform Approval Required for Production
+      - name: Set Pending Status for Platform Approval
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🔴 PRODUCTION deployment detected"
-          echo "🚫 Platform approval is MANDATORY for this PR"
-          echo "⏳ This job will BLOCK until platform approval is granted"
+          echo "🔴 Setting PENDING status for platform approval..."
           
-          REPO="${{ github.repository }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          # Set commit status to PENDING - this blocks the merge button
+          gh api "repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state="pending" \
+            -f description="Waiting for platform team approval for production deployment" \
+            -f context="platform-approval/production"
           
-          # Add initial blocking comment to PR
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-            -f body="## 🔴 PRODUCTION Deployment - Platform Approval Required
+          echo "✅ Merge button is now BLOCKED until platform approval"
 
-          **Status:** ⏳ **BLOCKED** - Waiting for platform team approval  
-          **Environment:** 🔴 **PRODUCTION**  
-          **Branch:** \`${{ github.head_ref }}\` → \`${{ github.base_ref }}\`  
-
-          ### 🚫 Merge Status
-          This PR **CANNOT be merged** until platform approval is granted.  
-          The workflow will remain blocked until approval is received.
-
-          ### ⏱️ Approval Process
-          - **Timeout:** 24 hours maximum wait time  
-          - **Required Action:** Platform team must approve deployment  
-          - **Auto-rejection:** Request expires after 24 hours if no response  
-
-          ---
-          *Platform approval is mandatory for all production deployments.*"
-
-      - name: Create or Find Platform Approval Issue  
+      - name: Create Platform Approval Issue
         id: create-approval
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -412,537 +232,271 @@ jobs:
           REPO="${{ github.repository }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
           
-          # Get platform approver usernames from repository variables
           PLATFORM_APPROVER_1="${{ vars.PLATFORM_APPROVER_1 }}"
           PLATFORM_APPROVER_2="${{ vars.PLATFORM_APPROVER_2 }}"
           
           if [[ -z "$PLATFORM_APPROVER_1" || -z "$PLATFORM_APPROVER_2" ]]; then
-            echo "❌ Platform approver usernames not found in repository variables"
-            echo "Please set PLATFORM_APPROVER_1 and PLATFORM_APPROVER_2 in repository variables"
+            echo "❌ Platform approver usernames not configured"
             exit 1
           fi
           
-          echo "👥 Authorized platform approvers: $PLATFORM_APPROVER_1, $PLATFORM_APPROVER_2"
-          
-          # Check if approval issue already exists for this PR
+          # Check if approval issue already exists
           EXISTING_ISSUE=$(gh api "repos/$REPO/issues" \
-            --jq '.[] | select(.title | contains("PRODUCTION Deployment Approval Required - PR #'$PR_NUMBER'") and .state == "open") | .number' | head -1)
+            --jq '.[] | select(.title | contains("PRODUCTION Deployment Approval - PR #'$PR_NUMBER'") and .state == "open") | .number' | head -1)
           
           if [[ -n "$EXISTING_ISSUE" ]]; then
             echo "📋 Using existing approval issue #$EXISTING_ISSUE"
             ISSUE_NUMBER="$EXISTING_ISSUE"
           else
-            # Create new approval issue with professional formatting
             ISSUE_TITLE="🔴 PRODUCTION Deployment Approval Required - PR #$PR_NUMBER"
             CURRENT_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
             
             ISSUE_BODY=$(cat <<EOF
           # 🔴 Production Deployment Approval Request
 
-          ## 📋 Deployment Summary
+          ## 📋 Deployment Details
           | Field | Value |
           |-------|-------|
           | **Environment** | 🔴 **PRODUCTION** |
-          | **Migration Type** | \`tst → prd\` |
           | **Pull Request** | [#$PR_NUMBER](${{ github.event.pull_request.html_url }}) |
           | **Requested By** | @${{ github.actor }} |
           | **Request Time** | $CURRENT_TIME |
-          | **Branch Flow** | \`${{ github.head_ref }}\` → \`${{ github.base_ref }}\` |
-          | **Workflow Run** | [View Details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+          | **Branch** | \`${{ github.head_ref }}\` → \`${{ github.base_ref }}\` |
 
-          ## ✅ Pre-Deployment Validation Status
-          All mandatory checks have been completed and passed:
-          - ✅ **Branch Flow Validation**: Verified
-          - ✅ **Security Analysis**: CodeQL scan completed
-          - ✅ **Code Owner Approval**: Approved
-          - ✅ **Branch Protection**: All requirements satisfied
+          ## ✅ Validation Status
+          All mandatory pre-deployment checks have passed:
+          - ✅ Branch flow validation
+          - ✅ Security analysis (CodeQL)  
+          - ✅ Code owner approval
 
-          ## 🎯 Required Platform Team Action
-          Please review this production deployment request and respond with your decision:
+          ## 🎯 Required Action
+          **To Approve Production Deployment:**  
+          Comment: \`/approve\`, \`approved\`, \`lgtm\`, or \`yes\`
 
-          ### ✅ To Approve Production Deployment:
-          Comment with any of: \`/approve\`, \`approved\`, \`lgtm\`, \`yes\`
-
-          ### ❌ To Reject Production Deployment:  
-          Comment with any of: \`/reject\`, \`rejected\`, \`deny\`, \`no\`
+          **To Reject Production Deployment:**  
+          Comment: \`/reject\`, \`rejected\`, \`deny\`, or \`no\`
 
           ## 👥 Authorized Approvers
-          Only the following platform team members can approve this request:
-          - @$PLATFORM_APPROVER_1
+          Only these platform team members can approve:
+          - @$PLATFORM_APPROVER_1  
           - @$PLATFORM_APPROVER_2
 
-          ## ⏱️ Approval Timeline & Process
-          - **Maximum Wait Time**: 24 hours from request creation
-          - **Auto-Rejection**: Request will be automatically rejected if no response within timeout
-          - **Approval Requirement**: Only ONE authorized approver needs to respond
-          - **Immediate Effect**: Approval/rejection takes effect immediately upon comment
+          ## 🚫 Current Status
+          **The PR merge is BLOCKED until platform approval is granted.**  
+          The merge button will remain disabled until approval is received.
 
-          ## 🚨 Important Notes
-          - This is a **PRODUCTION** environment deployment with potential business impact
-          - The associated Pull Request is **BLOCKED** and cannot be merged until approval
-          - All security, quality, and code review requirements have been satisfied
-          - Platform team approval is the final gate before production deployment
-
-          ## 📞 Escalation
-          If urgent approval is needed outside business hours, please contact the platform team directly.
+          ## ⚠️ Important Notes
+          - This is a **PRODUCTION** environment deployment
+          - Platform approval is **MANDATORY** - no exceptions
+          - Approval/rejection takes effect immediately upon comment
+          - Only authorized platform team members can make the decision
 
           ---
-          *This approval request was automatically generated by the CI/CD pipeline.*
+          *Platform approval is required for all production deployments.*
           EOF
           )
             
-            # Create the approval issue
             ISSUE_RESPONSE=$(gh api "repos/$REPO/issues" \
               -f title="$ISSUE_TITLE" \
               -f body="$ISSUE_BODY" \
               -f assignees[]="$PLATFORM_APPROVER_1" \
               -f assignees[]="$PLATFORM_APPROVER_2" \
-              -f labels[]="production-approval" \
-              -f labels[]="platform-team" \
-              -f labels[]="deployment-gate")
+              -f labels[]="platform-approval" \
+              -f labels[]="production-deployment")
             
             ISSUE_NUMBER=$(echo "$ISSUE_RESPONSE" | jq -r '.number')
-            ISSUE_URL=$(echo "$ISSUE_RESPONSE" | jq -r '.html_url')
-            
-            echo "📋 Created new approval issue #$ISSUE_NUMBER"
-            echo "🔗 Issue URL: $ISSUE_URL"
+            echo "📋 Created platform approval issue #$ISSUE_NUMBER"
           fi
           
           echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          
+          # Add blocking comment to PR
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            -f body="## 🔴 PRODUCTION Deployment - Platform Approval Required
 
-      - name: Wait for Platform Approval Decision
-        id: platform-approval
+          **Status:** 🚫 **MERGE BLOCKED**  
+          **Reason:** Waiting for platform team approval  
+          **Approval Issue:** #$ISSUE_NUMBER  
+
+          ### 🚫 Merge Status  
+          The merge button is **DISABLED** until platform approval is granted.  
+          This is enforced by a required status check.
+
+          ### 👥 Who Can Approve  
+          - @$PLATFORM_APPROVER_1  
+          - @$PLATFORM_APPROVER_2  
+
+          ### ⏱️ Next Steps  
+          Platform team will review and approve/reject the production deployment.  
+          You will be notified when a decision is made.
+
+          ---
+          *Production deployments require platform team approval.*"
+
+# ----------------------------------------------------------------------
+# 5. Platform Approval Comment Handler
+# ----------------------------------------------------------------------
+  handle-platform-approval:
+    name: handle-platform-approval  
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
+      contains(github.event.issue.title, 'PRODUCTION Deployment Approval Required - PR #')
+    steps:
+      - name: Process Platform Approval Comment
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "⏳ BLOCKING: Waiting for platform approval decision..."
-          echo "🔴 PRODUCTION deployment cannot proceed without approval"
+          echo "💬 Processing platform approval comment..."
           
-          REPO="${{ github.repository }}"
-          ISSUE_NUMBER="${{ steps.create-approval.outputs.issue_number }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          COMMENT_AUTHOR="${{ github.event.comment.user.login }}"
+          COMMENT_BODY="${{ github.event.comment.body }}"
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          
+          # Extract PR number from issue title
+          if [[ "$ISSUE_TITLE" =~ PR\ #([0-9]+) ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            echo "🔗 Found PR number: #$PR_NUMBER"
+          else
+            echo "❌ Could not extract PR number from issue title"
+            exit 1
+          fi
+          
+          # Get platform approvers
           PLATFORM_APPROVER_1="${{ vars.PLATFORM_APPROVER_1 }}"
           PLATFORM_APPROVER_2="${{ vars.PLATFORM_APPROVER_2 }}"
           
-          echo "📋 Monitoring approval issue: #$ISSUE_NUMBER"  
-          echo "👥 Authorized approvers: $PLATFORM_APPROVER_1, $PLATFORM_APPROVER_2"
-          echo "⏰ Maximum wait time: 24 hours"
+          # Check if commenter is authorized
+          if [[ "$COMMENT_AUTHOR" != "$PLATFORM_APPROVER_1" && "$COMMENT_AUTHOR" != "$PLATFORM_APPROVER_2" ]]; then
+            echo "❌ Comment from unauthorized user: $COMMENT_AUTHOR"
+            exit 0
+          fi
           
-          TIMEOUT_SECONDS=86400  # 24 hours
-          POLL_INTERVAL=30       # Check every 30 seconds  
-          MAX_ITERATIONS=$((TIMEOUT_SECONDS / POLL_INTERVAL))
+          echo "✅ Comment from authorized platform approver: @$COMMENT_AUTHOR"
           
-          for ((i=1; i<=MAX_ITERATIONS; i++)); do
-            CURRENT_TIME=$(date -u "+%H:%M:%S UTC")
-            echo "🔍 Approval check $i/$MAX_ITERATIONS at $CURRENT_TIME"
-            
-            # Get all comments on the approval issue
-            COMMENTS=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" --jq '.')
-            
-            # Process each comment to check for approval/rejection
-            while IFS= read -r comment; do
-              if [[ -z "$comment" || "$comment" == "null" ]]; then
-                continue
-              fi
-              
-              COMMENT_AUTHOR=$(echo "$comment" | jq -r '.user.login')
-              COMMENT_BODY=$(echo "$comment" | jq -r '.body' | tr '[:upper:]' '[:lower:]')
-              COMMENT_URL=$(echo "$comment" | jq -r '.html_url')
-              
-              # Check if comment is from authorized platform approver
-              if [[ "$COMMENT_AUTHOR" == "$PLATFORM_APPROVER_1" || "$COMMENT_AUTHOR" == "$PLATFORM_APPROVER_2" ]]; then
-                echo "💬 Decision comment found from authorized approver @$COMMENT_AUTHOR"
-                
-                # Check for approval keywords
-                if [[ "$COMMENT_BODY" =~ (approve|approved|lgtm|yes|/approve) ]]; then
-                  APPROVAL_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
-                  echo "🎉 ✅ PRODUCTION DEPLOYMENT APPROVED!"
-                  echo "👤 Approved by: @$COMMENT_AUTHOR"  
-                  echo "⏰ Approval time: $APPROVAL_TIME"
-                  echo "🔓 PR is now unblocked and ready for merge"
-                  
-                  # Update PR with approval notification
-                  gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-                    -f body="## ✅ Production Deployment Approved
-
-                  ### 📋 Approval Summary
-                  | Detail | Information |
-                  |--------|-------------|
-                  | **Status** | ✅ **APPROVED** |
-                  | **Approved By** | @$COMMENT_AUTHOR (Platform Team) |
-                  | **Approval Time** | $APPROVAL_TIME |
-                  | **Environment** | 🔴 Production |
-                  | **Decision Link** | [View Approval Comment]($COMMENT_URL) |
-
-                  ### 🚀 Next Steps
-                  - ✅ Platform approval requirement satisfied
-                  - ✅ PR is now ready for merge  
-                  - 🚀 Production deployment will proceed automatically upon merge
-                  - 📊 Monitor deployment progress in Harness dashboard
-
-                  ---
-                  *Production deployment approved by platform team.*"
-                  
-                  # Set success outputs
-                  echo "status=success" >> $GITHUB_OUTPUT
-                  echo "approved=true" >> $GITHUB_OUTPUT
-                  echo "approver=$COMMENT_AUTHOR" >> $GITHUB_OUTPUT
-                  exit 0
-                fi
-                
-                # Check for rejection keywords
-                if [[ "$COMMENT_BODY" =~ (reject|rejected|deny|denied|no|/reject) ]]; then
-                  REJECTION_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
-                  echo "❌ PRODUCTION DEPLOYMENT REJECTED"
-                  echo "👤 Rejected by: @$COMMENT_AUTHOR"
-                  echo "⏰ Rejection time: $REJECTION_TIME" 
-                  echo "🚫 PR remains blocked and cannot be merged"
-                  
-                  # Update PR with rejection notification  
-                  gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-                    -f body="## ❌ Production Deployment Rejected
-
-                  ### 📋 Rejection Summary
-                  | Detail | Information |
-                  |--------|-------------|
-                  | **Status** | ❌ **REJECTED** |
-                  | **Rejected By** | @$COMMENT_AUTHOR (Platform Team) |
-                  | **Rejection Time** | $REJECTION_TIME |
-                  | **Environment** | 🔴 Production |
-                  | **Decision Link** | [View Rejection Comment]($COMMENT_URL) |
-
-                  ### 🚫 Impact
-                  - ❌ Platform approval **denied**
-                  - 🚫 PR merge is **blocked** 
-                  - ❌ Production deployment **cancelled**
-                  - 📝 Review feedback and address concerns raised
-
-                  ### 📞 Next Steps
-                  1. Contact the platform team for clarification on rejection reasons
-                  2. Address any concerns or issues identified
-                  3. Request new platform approval if changes are made
-                  4. Ensure all requirements are met before resubmission
-
-                  ---
-                  *Production deployment rejected by platform team.*"
-                  
-                  # Set failure outputs
-                  echo "status=failed" >> $GITHUB_OUTPUT
-                  echo "approved=false" >> $GITHUB_OUTPUT  
-                  echo "rejector=$COMMENT_AUTHOR" >> $GITHUB_OUTPUT
-                  exit 1
-                fi
-              fi
-            done <<< "$(echo "$COMMENTS" | jq -c '.[]')"
-            
-            # Show remaining time for approval
-            REMAINING_SECONDS=$((TIMEOUT_SECONDS - (i * POLL_INTERVAL)))
-            REMAINING_HOURS=$((REMAINING_SECONDS / 3600))  
-            REMAINING_MINS=$(( (REMAINING_SECONDS % 3600) / 60 ))
-            
-            if (( i % 120 == 0 )); then  # Log every hour (120 * 30 seconds)
-              echo "⏱️ Time remaining: ${REMAINING_HOURS}h ${REMAINING_MINS}m"
-            fi
-            
-            sleep $POLL_INTERVAL
-          done
+          # Get PR details to find commit SHA
+          PR_INFO=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER")
+          COMMIT_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
           
-          # Timeout reached - no response within 24 hours
-          TIMEOUT_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
-          echo "⏰ TIMEOUT: No platform approval response received within 24 hours"
-          echo "🚫 Production deployment request has been automatically rejected"
-          echo "⏰ Timeout occurred at: $TIMEOUT_TIME"
+          COMMENT_LOWER=$(echo "$COMMENT_BODY" | tr '[:upper:]' '[:lower:]')
           
-          # Update PR with timeout notification
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-            -f body="## ⏰ Production Deployment Request Timeout
-
-          ### 📋 Timeout Summary  
-          | Detail | Information |
-          |--------|-------------|
-          | **Status** | ⏰ **TIMEOUT** |
-          | **Timeout Time** | $TIMEOUT_TIME |
-          | **Wait Duration** | 24 hours (maximum) |
-          | **Environment** | 🔴 Production |
-          | **Approval Issue** | #$ISSUE_NUMBER |
-
-          ### 🚫 Impact
-          - ⏰ No response received within 24-hour timeout window
-          - 🚫 PR merge remains **blocked**
-          - ❌ Production deployment **cancelled**  
-          - 🔄 New approval request required to proceed
-
-          ### 📞 Next Steps  
-          1. Contact platform team to understand any delays or issues
-          2. Request new platform approval for production deployment
-          3. Ensure platform team is aware of deployment urgency
-          4. Consider escalation if deployment is time-critical
-
-          ---
-          *Production deployment request timed out after 24 hours.*"
-          
-          # Set timeout failure outputs
-          echo "status=timeout" >> $GITHUB_OUTPUT
-          echo "approved=false" >> $GITHUB_OUTPUT
-          echo "timeout=true" >> $GITHUB_OUTPUT
-          exit 1
-
-      - name: Close Platform Approval Issue
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          REPO="${{ github.repository }}"
-          ISSUE_NUMBER="${{ steps.create-approval.outputs.issue_number }}"
-          FINAL_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
-          
-          # Determine final outcome and create appropriate closing message
-          if [[ "${{ steps.platform-approval.outputs.approved }}" == "true" ]]; then
-            APPROVER="${{ steps.platform-approval.outputs.approver }}"
+          # Check for approval
+          if [[ "$COMMENT_LOWER" =~ (approve|approved|lgtm|yes|/approve) ]]; then
+            APPROVAL_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
+            echo "🎉 ✅ PRODUCTION DEPLOYMENT APPROVED by @$COMMENT_AUTHOR"
             
-            FINAL_COMMENT=$(cat <<EOF
-          ## ✅ Production Deployment Approved - Request Completed
-
-          ### 📋 Final Status Summary
-          | Detail | Information |
-          |--------|-------------|  
-          | **Final Status** | ✅ **APPROVED** |
-          | **Approved By** | @$APPROVER (Platform Team) |
-          | **Completion Time** | $FINAL_TIME |
-          | **Request Duration** | Approved within 24-hour window |
-          | **Environment** | 🔴 Production |
-
-          ### 🚀 Deployment Authorization
-          - ✅ **Production deployment approved** and authorized for execution
-          - ✅ **Pull request unblocked** - merge can now proceed  
-          - ✅ **Platform team approval** requirement satisfied
-          - 🚀 **Deployment pipeline** will activate automatically upon PR merge
-
-          ### 📊 Post-Approval Actions
-          - Pull request merge is now enabled
-          - Harness deployment pipeline will be triggered automatically
-          - Platform team will monitor deployment progress  
-          - Production environment will be updated with approved changes
-
-          ### 🎯 Business Impact  
-          **Approved production deployment will proceed as requested.**  
-          Platform team has reviewed and authorized the deployment based on:
-          - Completed security and quality validations
-          - Successful code review and approvals  
-          - Adherence to deployment standards and procedures
-
-          ---
-          **✅ Request Status: COMPLETED - APPROVED**  
-          *Platform approval process completed successfully.*
-          EOF
-          )
+            # Set commit status to SUCCESS - this enables the merge button
+            gh api "repos/${{ github.repository }}/statuses/$COMMIT_SHA" \
+              -f state="success" \
+              -f description="Production deployment approved by @$COMMENT_AUTHOR" \
+              -f context="platform-approval/production"
             
-            # Close issue with success status
-            gh api "repos/$REPO/issues/$ISSUE_NUMBER" \
+            # Update PR with approval notification
+            gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+              -f body="## ✅ Production Deployment Approved
+
+            ### 🎉 MERGE NOW ENABLED
+            **Status:** ✅ **APPROVED**  
+            **Approved By:** @$COMMENT_AUTHOR (Platform Team)  
+            **Approval Time:** $APPROVAL_TIME  
+
+            ### 🚀 Next Steps
+            - ✅ Platform approval requirement satisfied  
+            - ✅ **Merge button is now ENABLED**  
+            - 🚀 Production deployment will proceed upon merge  
+
+            ---
+            *Production deployment approved by platform team.*"
+            
+            # Update approval issue
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+              -f body="## ✅ Approval Granted
+
+            **Status:** APPROVED  
+            **Approved By:** @$COMMENT_AUTHOR  
+            **Time:** $APPROVAL_TIME  
+
+            The PR merge button has been enabled. Production deployment authorized."
+            
+            # Close the approval issue
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
               -f state="closed" \
               -f state_reason="completed"
             
-            # Add completion labels
-            gh api "repos/$REPO/issues/$ISSUE_NUMBER/labels" \
-              -f labels[]="production-approved" \
-              -f labels[]="deployment-authorized" \
+            # Add approval labels
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels" \
+              -f labels[]="approved" \
               -f labels[]="completed" || true
               
-          else
-            # Handle rejection or timeout
-            if [[ "${{ steps.platform-approval.outputs.timeout }}" == "true" ]]; then
-              REASON="Request timed out after 24 hours with no response from platform team"
-              FINAL_STATUS="⏰ **TIMEOUT**"
-              BUSINESS_IMPACT="**Production deployment cancelled due to timeout.**"
-            else
-              REJECTOR="${{ steps.platform-approval.outputs.rejector }}"
-              REASON="Explicitly rejected by platform team member @$REJECTOR"
-              FINAL_STATUS="❌ **REJECTED**" 
-              BUSINESS_IMPACT="**Production deployment blocked by platform team decision.**"
-            fi
+          # Check for rejection  
+          elif [[ "$COMMENT_LOWER" =~ (reject|rejected|deny|denied|no|/reject) ]]; then
+            REJECTION_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
+            echo "❌ PRODUCTION DEPLOYMENT REJECTED by @$COMMENT_AUTHOR"
             
-            FINAL_COMMENT=$(cat <<EOF
-          ## ❌ Production Deployment Request Completed - Not Approved
-
-          ### 📋 Final Status Summary
-          | Detail | Information |
-          |--------|-------------|
-          | **Final Status** | $FINAL_STATUS |
-          | **Completion Time** | $FINAL_TIME |
-          | **Environment** | 🔴 Production |
-          | **Reason** | $REASON |
-
-          ### 🚫 Deployment Decision
-          - ❌ **Production deployment not approved**
-          - 🚫 **Pull request remains blocked** - merge cannot proceed
-          - ❌ **Platform approval requirement** not satisfied  
-          - 🛑 **Deployment pipeline** will not be triggered
-
-          ### 📞 Next Steps & Recommendations
-          1. **Review Decision**: Understand the reason for non-approval
-          2. **Address Concerns**: Work with platform team to resolve any issues
-          3. **Resubmit Request**: Create new approval request if concerns are addressed
-          4. **Escalation Path**: Contact platform team lead if urgent deployment needed
-
-          ### 🎯 Business Impact
-          $BUSINESS_IMPACT  
-          Deployment process has been halted to ensure production environment safety and compliance with organizational deployment policies.
-
-          ### 📋 Process Compliance
-          Platform approval requirement serves to:
-          - Ensure production deployment safety and compliance
-          - Validate business readiness for production changes
-          - Maintain deployment standards and risk management
-          - Provide final review gate for critical environment changes
-
-          ---
-          **❌ Request Status: COMPLETED - NOT APPROVED**  
-          *Platform approval process completed without authorization.*
-          EOF
-          )
+            # Set commit status to FAILURE - this keeps merge button disabled
+            gh api "repos/${{ github.repository }}/statuses/$COMMIT_SHA" \
+              -f state="failure" \
+              -f description="Production deployment rejected by @$COMMENT_AUTHOR" \
+              -f context="platform-approval/production"
             
-            # Close issue with not planned status  
-            gh api "repos/$REPO/issues/$ISSUE_NUMBER" \
+            # Update PR with rejection notification
+            gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+              -f body="## ❌ Production Deployment Rejected
+
+            ### 🚫 MERGE REMAINS BLOCKED
+            **Status:** ❌ **REJECTED**  
+            **Rejected By:** @$COMMENT_AUTHOR (Platform Team)  
+            **Rejection Time:** $REJECTION_TIME  
+
+            ### 🚫 Impact
+            - ❌ Platform approval **denied**  
+            - 🚫 **Merge button remains DISABLED**  
+            - ❌ Production deployment **blocked**  
+
+            ### 📞 Next Steps
+            1. Contact platform team for feedback on rejection reasons
+            2. Address concerns and make necessary changes
+            3. Request new platform approval if issues are resolved
+
+            ---
+            *Production deployment rejected by platform team.*"
+            
+            # Update approval issue
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+              -f body="## ❌ Approval Rejected
+
+            **Status:** REJECTED  
+            **Rejected By:** @$COMMENT_AUTHOR  
+            **Time:** $REJECTION_TIME  
+
+            The PR merge remains blocked. Production deployment denied."
+            
+            # Close the approval issue  
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
               -f state="closed" \
               -f state_reason="not_planned"
             
-            # Add appropriate completion labels
-            if [[ "${{ steps.platform-approval.outputs.timeout }}" == "true" ]]; then
-              gh api "repos/$REPO/issues/$ISSUE_NUMBER/labels" \
-                -f labels[]="production-timeout" \
-                -f labels[]="deployment-blocked" \
-                -f labels[]="completed" || true
-            else  
-              gh api "repos/$REPO/issues/$ISSUE_NUMBER/labels" \
-                -f labels[]="production-rejected" \
-                -f labels[]="deployment-blocked" \
-                -f labels[]="completed" || true
-            fi
-          fi
-          
-          # Add the final comment to close the issue
-          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" -f body="$FINAL_COMMENT"
-          
-          echo "📋 Platform approval issue #$ISSUE_NUMBER has been closed"
-
-      - name: Block Merge if Platform Approval Not Granted
-        if: steps.platform-approval.outputs.approved != 'true'
-        run: |
-          echo "🚫 MERGE BLOCKED: Production deployment requires platform approval"
-          
-          if [[ "${{ steps.platform-approval.outputs.timeout }}" == "true" ]]; then
-            echo "⏰ REASON: Platform approval request timed out after 24 hours"
-            echo "📝 ACTION NEEDED: Contact platform team and request new approval"
+            # Add rejection labels
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels" \
+              -f labels[]="rejected" \
+              -f labels[]="completed" || true
           else
-            REJECTOR="${{ steps.platform-approval.outputs.rejector }}"
-            echo "❌ REASON: Production deployment explicitly rejected by @$REJECTOR"  
-            echo "📝 ACTION NEEDED: Address platform team concerns and request new approval"
+            echo "ℹ️ Comment does not contain approval/rejection keywords"
           fi
-          
-          echo ""
-          echo "🔴 PRODUCTION DEPLOYMENT CANNOT PROCEED"
-          echo "🚫 This PR cannot be merged without platform team approval"
-          echo "📞 Contact the platform team for assistance with approval process"
-          
-          exit 1
 
 # ----------------------------------------------------------------------
-# 6. Deployment Pipeline - Runs after successful merge to target branches
+# 6. Deployment Pipeline - Runs after successful merge  
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
-    outputs:
-      harness_status: ${{ steps.set-harness-status.outputs.status }}
     steps:
        - name: Checkout code
          uses: actions/checkout@v4
          
-       - name: Check Previous PR Workflow Status
-         id: check-pr-status
-         env:
-           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-         run: |
-           echo "🔍 Checking status of previous PR workflow..."
-           
-           # Get the merge commit PR number
-           COMMIT_MSG=$(git log -1 --pretty=%B | head -1)
-           if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
-             PR_NUMBER="${BASH_REMATCH[1]}"
-             echo "🔗 Found PR: #$PR_NUMBER"
-           else
-             echo "❌ Could not extract PR number from merge commit: $COMMIT_MSG"
-             exit 1
-           fi
-           
-           REPO="${{ github.repository }}"
-           
-           # Get PR information
-           PR_INFO=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
-           HEAD_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
-           
-           # Find matching workflow run
-           MATCHING_RUNS=$(gh api "repos/$REPO/actions/runs" --paginate \
-             --jq '.workflow_runs[] | select(.head_sha == "'$HEAD_SHA'" and .name == "Branch Protection and Pipeline Trigger" and .event == "pull_request")')
-           
-           if [[ -z "$MATCHING_RUNS" ]]; then
-             echo "❌ No workflow run found for head SHA: $HEAD_SHA"
-             exit 1
-           fi
-           
-           # Get the latest matching run
-           LATEST_RUN=$(echo "$MATCHING_RUNS" | jq -s 'sort_by(.run_number) | reverse | .[0]')
-           WORKFLOW_ID=$(echo "$LATEST_RUN" | jq -r '.id')
-           WORKFLOW_CONCLUSION=$(echo "$LATEST_RUN" | jq -r '.conclusion')
-           
-           if [[ "$WORKFLOW_CONCLUSION" != "success" ]]; then
-             echo "❌ PR workflow was not successful: $WORKFLOW_CONCLUSION"
-             exit 1
-           fi
-           
-           # Get job statuses
-           JOBS=$(gh api "repos/$REPO/actions/runs/$WORKFLOW_ID/jobs" --jq '.jobs')
-           
-           VALIDATE_PR_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "validate-pr") | .conclusion')
-           CODE_SECURITY_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "code-security") | .conclusion')
-           CODEOWNER_APPROVAL_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "codeowner-approval") | .conclusion')
-           BRANCH_PROTECTION_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "branch-protection-gate") | .conclusion')
-           
-           echo "✅ validate-pr: $VALIDATE_PR_STATUS"
-           echo "✅ code-security: $CODE_SECURITY_STATUS"
-           echo "✅ codeowner-approval: $CODEOWNER_APPROVAL_STATUS"
-           echo "✅ branch-protection-gate: $BRANCH_PROTECTION_STATUS"
-           
-           # For production deployments, also check platform approval
-           PLATFORM_APPROVAL_STATUS="not_required"
-           if [[ "${{ github.ref_name }}" == "prd" ]]; then
-             PLATFORM_APPROVAL_STATUS=$(echo "$JOBS" | jq -r '.[] | select(.name == "platform-approval-gate") | .conclusion')
-             echo "✅ platform-approval-gate: $PLATFORM_APPROVAL_STATUS"
-             
-             if [[ "$PLATFORM_APPROVAL_STATUS" != "success" ]]; then
-               echo "❌ Platform approval gate failed for production deployment"
-               exit 1
-             fi
-           fi
-           
-           # Verify all checks passed
-           if [[ "$VALIDATE_PR_STATUS" == "success" && "$CODE_SECURITY_STATUS" == "success" && "$CODEOWNER_APPROVAL_STATUS" == "success" && "$BRANCH_PROTECTION_STATUS" == "success" ]]; then
-             echo "🎉 All required checks passed! Proceeding with deployment"
-           else
-             echo "❌ Not all required checks passed"
-             exit 1
-           fi
-           
-           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-           echo "validate_pr_status=$VALIDATE_PR_STATUS" >> $GITHUB_OUTPUT
-           echo "code_security_status=$CODE_SECURITY_STATUS" >> $GITHUB_OUTPUT
-           echo "codeowner_approval_status=$CODEOWNER_APPROVAL_STATUS" >> $GITHUB_OUTPUT
-           echo "branch_protection_status=$BRANCH_PROTECTION_STATUS" >> $GITHUB_OUTPUT
-           echo "platform_approval_status=$PLATFORM_APPROVAL_STATUS" >> $GITHUB_OUTPUT
-           echo "workflow_run_id=$WORKFLOW_ID" >> $GITHUB_OUTPUT
-
        - name: Determine migration configuration
          id: migration-config
          run: |
@@ -951,69 +505,15 @@ jobs:
            if [[ "$BRANCH_NAME" == "tst" ]]; then
              echo "migration_type=dev-to-tst" >> $GITHUB_OUTPUT
              echo "environment=tst" >> $GITHUB_OUTPUT
-             echo "requires_platform_approval=false" >> $GITHUB_OUTPUT
            elif [[ "$BRANCH_NAME" == "prd" ]]; then
              echo "migration_type=tst-to-prd" >> $GITHUB_OUTPUT
              echo "environment=prd" >> $GITHUB_OUTPUT
-             echo "requires_platform_approval=true" >> $GITHUB_OUTPUT
            fi
-          
-           echo "🎯 Target branch: $BRANCH_NAME"
-           echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
-           echo "🔐 Platform approval required: $(cat $GITHUB_OUTPUT | grep requires_platform_approval | cut -d'=' -f2)"
-
-       - name: Get commit details
-         id: commit-info
-         run: |
-           echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
-           echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
-           echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
-
-       - name: Get PR details from merge commit
-         id: pr-info
-         run: |
-           PR_NUMBER="${{ steps.check-pr-status.outputs.pr_number }}"
-           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-           echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
-           echo "🔗 Using PR: #$PR_NUMBER"
 
        - name: Trigger Harness Pipeline
-         id: trigger-pipeline
          run: |
            echo "🚀 Triggering Harness pipeline for ${{ steps.migration-config.outputs.migration_type }}"
            
-           # Set platform approval information based on environment
-           if [[ "${{ steps.migration-config.outputs.requires_platform_approval }}" == "true" ]]; then
-             PLATFORM_APPROVAL_STATUS="required_and_approved"
-             echo "✅ Production deployment - Platform approval was required and granted"
-           else
-             PLATFORM_APPROVAL_STATUS="not_required" 
-             echo "ℹ️ Test deployment - Platform approval not required"
-           fi
-          
-           JOB_STATUSES=$(cat <<EOF
-           {
-             "validate_pr": "${{ steps.check-pr-status.outputs.validate_pr_status }}",
-             "code_security": {
-               "codeql": "${{ steps.check-pr-status.outputs.code_security_status }}",
-               "copilot_autofix": "completed_in_pr",
-               "had_security_issues": "checked_in_pr",
-               "issues_acknowledged": "resolved_in_pr"
-             },
-             "codeowner_approval": "${{ steps.check-pr-status.outputs.codeowner_approval_status }}",
-             "branch_protection_gate": "${{ steps.check-pr-status.outputs.branch_protection_status }}",
-             "platform_approval": {
-               "status": "$PLATFORM_APPROVAL_STATUS",
-               "required": "${{ steps.migration-config.outputs.requires_platform_approval }}",
-               "gate_status": "${{ steps.check-pr-status.outputs.platform_approval_status }}"
-             },
-             "workflow_run_id": "${{ github.run_id }}",
-             "pr_number": "${{ steps.check-pr-status.outputs.pr_number }}",
-             "pr_workflow_run_id": "${{ steps.check-pr-status.outputs.workflow_run_id }}"
-           }
-           EOF
-           )
-          
            RESPONSE=$(curl -s -w "%{http_code}" -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
              -H "Content-Type: application/json" \
              -d "{
@@ -1021,38 +521,16 @@ jobs:
                \"triggered_by\": \"${{ github.actor }}\",
                \"migration_type\": \"${{ steps.migration-config.outputs.migration_type }}\",
                \"environment\": \"${{ steps.migration-config.outputs.environment }}\",
-               \"PR_URL\": \"${{ steps.pr-info.outputs.pr_url }}\",
                \"EDB_ID\": \"${{ vars.EDB_ID }}\",
-               \"job_statuses\": $JOB_STATUSES,
                \"commit_sha\": \"${{ github.sha }}\",
-               \"commit_author\": \"${{ steps.commit-info.outputs.commit_author }}\",
-               \"branch_name\": \"${{ github.ref_name }}\",
-               \"requires_platform_approval\": \"${{ steps.migration-config.outputs.requires_platform_approval }}\"
+               \"branch_name\": \"${{ github.ref_name }}\"
              }")
           
            HTTP_CODE="${RESPONSE: -3}"
-           RESPONSE_BODY="${RESPONSE%???}"
          
            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
              echo "✅ Successfully triggered Harness pipeline"
-             echo "triggered=true" >> $GITHUB_OUTPUT
-             echo "🔗 Related PR: ${{ steps.pr-info.outputs.pr_url }}"
-             if [[ "${{ steps.migration-config.outputs.requires_platform_approval }}" == "true" ]]; then
-               echo "👤 Production deployment - Platform approved"
-             fi
            else
-             echo "❌ Failed to trigger Harness pipeline (HTTP $HTTP_CODE)"
-             echo "triggered=false" >> $GITHUB_OUTPUT
-             echo "Response: $RESPONSE_BODY"
+             echo "❌ Failed to trigger Harness pipeline"
              exit 1
-           fi
-
-       - name: Set Harness status
-         id: set-harness-status
-         if: always()
-         run: |
-           if [[ "${{ steps.trigger-pipeline.outputs.triggered }}" == "true" ]]; then
-             echo "status=success" >> $GITHUB_OUTPUT
-           else
-             echo "status=failure" >> $GITHUB_OUTPUT
            fi
