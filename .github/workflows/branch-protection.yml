@@ -33,7 +33,7 @@ permissions:
 ################################################################################
 jobs:
   validate-pr:
-    if: github.event_name == 'workflow_call'
+    if: github.event_name == 'workflow_call' && github.event.pull_request
     runs-on: ubuntu-latest
     outputs:
       status: ${{ steps.set-status.outputs.status }}
@@ -90,7 +90,7 @@ jobs:
   code-security:
     name: code-security
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_call' && github.event.pull_request
     needs: validate-pr
     outputs:
       codeql_status: ${{ steps.set-codeql-status.outputs.status }}
@@ -291,8 +291,9 @@ jobs:
     name: codeowner-approval
     runs-on: ubuntu-latest
     if: |
-      github.event_name == 'pull_request' && 
-      (needs.code-security.outputs.has_security_issues == 'false' || 
+      github.event_name == 'workflow_call' &&                         # ← CHANGED
+      github.event.pull_request &&                                    # ← CHANGED
+      (needs.code-security.outputs.has_security_issues == 'false' ||
        needs.code-security.outputs.issues_acknowledged == 'true')
     needs: [validate-pr, code-security]
     timeout-minutes: 30
@@ -337,7 +338,9 @@ jobs:
   platform-approval-check:
     name: platform-approval-check
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.base_ref == 'prd'
+    if: github.event_name == 'workflow_call' &&                       
+        github.event.pull_request &&                                 
+        github.base_ref == 'prd'
     needs: [validate-pr, code-security, codeowner-approval]
     outputs:
       status: ${{ steps.set-platform-status.outputs.status }}
@@ -745,8 +748,8 @@ jobs:
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'push' &&
+    if: |
+      github.event_name == 'push' &&                                 
       (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
     outputs:
       harness_status: ${{ steps.set-harness-status.outputs.status }}
