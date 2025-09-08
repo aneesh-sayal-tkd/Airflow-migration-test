@@ -291,8 +291,8 @@ jobs:
     name: codeowner-approval
     runs-on: ubuntu-latest
     if: |
-      github.event_name == 'workflow_call' &&                         # ← CHANGED
-      github.event.pull_request &&                                    # ← CHANGED
+      github.event_name == 'workflow_call' &&                        
+      github.event.pull_request &&                                  
       (needs.code-security.outputs.has_security_issues == 'false' ||
        needs.code-security.outputs.issues_acknowledged == 'true')
     needs: [validate-pr, code-security]
@@ -338,9 +338,7 @@ jobs:
   platform-approval-check:
     name: platform-approval-check
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_call' &&                       
-        github.event.pull_request &&                                 
-        github.base_ref == 'prd'
+    if: github.event_name == 'workflow_call' && github.event.pull_request && github.base_ref == 'prd'
     needs: [validate-pr, code-security, codeowner-approval]
     outputs:
       status: ${{ steps.set-platform-status.outputs.status }}
