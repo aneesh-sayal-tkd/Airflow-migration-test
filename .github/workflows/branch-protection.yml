@@ -792,7 +792,7 @@ jobs:
            
            # Find matching workflow run
            MATCHING_RUNS=$(gh api "repos/$REPO/actions/runs" --paginate \
-             --jq '.workflow_runs[] | select(.head_sha == "'$HEAD_SHA'" and .name == "Branch Protection and Pipeline Trigger" and .event == "pull_request")')
+             --jq '.workflow_runs[] | select(.head_sha == "'$HEAD_SHA'" and .name == "Branch Protection (from mono repo)" and .event == "pull_request")')
            
            if [[ -z "$MATCHING_RUNS" ]]; then
              echo "❌ No workflow run found for head SHA: $HEAD_SHA"
