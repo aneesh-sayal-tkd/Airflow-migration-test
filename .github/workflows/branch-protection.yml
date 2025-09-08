@@ -10,6 +10,12 @@ on:
     inputs:
       TARGET_BRANCHES: { type: string, required: true }   # e.g. "tst,prd"
       SOURCE_BRANCHES: { type: string, required: true }   # e.g. "dev,tst"
+      pr_number: { type: string, required: false }
+      head_ref: { type: string, required: false }
+      base_ref: { type: string, required: false }
+      head_sha: { type: string, required: false }
+      is_pull_request: { type: boolean, required: true, default: false }
+      event_name: { type: string, required: true }
     secrets:
       HARNESS_WEBHOOK_URL: { required: true }
 
@@ -33,7 +39,7 @@ permissions:
 ################################################################################
 jobs:
   validate-pr:
-    if: github.event_name == 'workflow_call' && github.event.pull_request
+    if: inputs.is_pull_request == true
     runs-on: ubuntu-latest
     outputs:
       status: ${{ steps.set-status.outputs.status }}
@@ -46,7 +52,7 @@ jobs:
           missing=()
 
           # Repository VARIABLES
-          [[ -z "${{ vars.EDB_ID }}"            ]] && missing+=("EDB_ID (variable)")
+          [[ -z "${{ vars.EDB_ID }}" ]] && missing+=("EDB_ID (variable)")
           [[ -z "${{ vars.PLATFORM_APPROVER_1 }}" ]] && missing+=("PLATFORM_APPROVER_1 (variable)")
           [[ -z "${{ vars.PLATFORM_APPROVER_2 }}" ]] && missing+=("PLATFORM_APPROVER_2 (variable)")
 
@@ -63,8 +69,8 @@ jobs:
 
       - name: Enforce allowed branch flow (dev→tst, tst→prd)
         run: |
-          SRC="${{ github.head_ref }}"
-          DST="${{ github.base_ref }}"
+          SRC="${{ inputs.head_ref }}"
+          DST="${{ inputs.base_ref }}"
           if [[ "$SRC:$DST" == "dev:tst" || "$SRC:$DST" == "tst:prd" ]]; then
             echo "✅ Branch flow allowed ($SRC → $DST)"
           else
@@ -84,13 +90,14 @@ jobs:
       - id: set-status
         if: always()
         run: echo "status=${{ job.status }}" >> "$GITHUB_OUTPUT"
+
 # ----------------------------------------------------------------------
 # 2. CodeQL and Copilot Autofix Security Analysis
 # ----------------------------------------------------------------------
   code-security:
     name: code-security
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_call' && github.event.pull_request
+    if: inputs.is_pull_request == true
     needs: validate-pr
     outputs:
       codeql_status: ${{ steps.set-codeql-status.outputs.status }}
@@ -122,7 +129,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_NUMBER="${{ inputs.pr_number }}"
           
           # Wait a moment for CodeQL results to be processed
           sleep 10
@@ -132,7 +139,7 @@ jobs:
             --jq '[.[] | select(.state == "open" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
           
           # Get alerts introduced by this PR
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          HEAD_SHA="${{ inputs.head_sha }}"
           
           NEW_ALERTS=$(gh api "repos/$REPO/code-scanning/alerts" \
             --jq '[.[] | select(.state == "open" and .most_recent_instance.commit_sha == "'$HEAD_SHA'" and (.rule.security_severity_level == "high" or .rule.security_severity_level == "critical"))] | length' 2>/dev/null || echo "0")
@@ -172,7 +179,6 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            
             let commentBody = `## 🚨 Security Issues Detected\n\n`;
             commentBody += `This PR introduces new high/critical security issues that must be addressed.\n\n`;
             
@@ -195,7 +201,7 @@ jobs:
                 const issue = issues[i];
                 commentBody += `**${i + 1}. ${issue.rule || 'Security Issue'}**\n`;
                 commentBody += `- **Severity:** ${issue.severity || 'Unknown'}\n`;
-                commentBody += `- **Location:** `${issue.location?.path || 'Unknown'}:${issue.location?.start_line || 'Unknown'}`\n`;
+                commentBody += `- **Location:** \`${issue.location?.path || 'Unknown'}:${issue.location?.start_line || 'Unknown'}\`\n`;
                 if (issue.url) {
                   commentBody += `- **[View Details](${issue.url})**\n`;
                 }
@@ -209,11 +215,11 @@ jobs:
             commentBody += `1. ✅ **Review Copilot Autofix suggestions** in the Security tab\n`;
             commentBody += `2. 🔧 **Apply fixes** or implement manual fixes\n`;
             commentBody += `3. 🔄 **Push your changes** to trigger a new security scan\n`;
-            commentBody += `4. 🚫 **Or acknowledge issues** by commenting: `/acknowledge-security-issues`\n\n`;
+            commentBody += `4. 🚫 **Or acknowledge issues** by commenting: \`/acknowledge-security-issues\`\n\n`;
             commentBody += `⚠️ **The workflow is blocked until these issues are resolved or acknowledged.**`;
             
             await github.rest.issues.createComment({
-              issue_number: context.issue.number,
+              issue_number: ${{ inputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: commentBody
@@ -225,7 +231,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_NUMBER="${{ inputs.pr_number }}"
           REPO="${{ github.repository }}"
           
           # Check for acknowledgment comment
@@ -284,6 +290,7 @@ jobs:
           else
             echo "status=not_needed" >> $GITHUB_OUTPUT
           fi
+
 # ----------------------------------------------------------------------
 # 3. Code Owner Approval - Always required for all PRs
 # ----------------------------------------------------------------------
@@ -291,8 +298,7 @@ jobs:
     name: codeowner-approval
     runs-on: ubuntu-latest
     if: |
-      github.event_name == 'workflow_call' &&                        
-      github.event.pull_request &&                                  
+      inputs.is_pull_request == true &&                        
       (needs.code-security.outputs.has_security_issues == 'false' ||
        needs.code-security.outputs.issues_acknowledged == 'true')
     needs: [validate-pr, code-security]
@@ -305,7 +311,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR="${{ github.event.pull_request.number }}"
+          PR="${{ inputs.pr_number }}"
           REPO="${{ github.repository }}"
           echo "🕙 polling every 5 s for code-owner approval (max 30 min)…"
           
@@ -332,13 +338,14 @@ jobs:
           else
             echo "status=failure" >> $GITHUB_OUTPUT
           fi
+
 # ----------------------------------------------------------------------
 # 4. Platform Approval - ONLY required for production deployments (tst→prd)
 # ----------------------------------------------------------------------
   platform-approval-check:
     name: platform-approval-check
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_call' && github.event.pull_request && github.base_ref == 'prd'
+    if: inputs.is_pull_request == true && inputs.base_ref == 'prd'
     needs: [validate-pr, code-security, codeowner-approval]
     outputs:
       status: ${{ steps.set-platform-status.outputs.status }}
@@ -347,13 +354,14 @@ jobs:
       - name: Check if Platform Approval Required
         id: check-environment
         run: |
-          if [[ "${{ github.base_ref }}" == "prd" ]]; then
+          if [[ "${{ inputs.base_ref }}" == "prd" ]]; then
             echo "requires_approval=true" >> $GITHUB_OUTPUT
             echo "🔴 PRODUCTION deployment detected - Platform approval REQUIRED"
           else
             echo "requires_approval=false" >> $GITHUB_OUTPUT
             echo "🟢 TEST deployment - Platform approval not required"
           fi
+
       - name: Create Platform Approval Status Check
         if: steps.check-environment.outputs.requires_approval == 'true'
         uses: actions/github-script@v7
@@ -362,12 +370,13 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
+              sha: "${{ inputs.head_sha }}",
               state: 'pending',
               target_url: `${context.payload.repository.html_url}/actions/runs/${context.runId}`,
               description: 'Platform approval required for production deployment',
               context: 'platform-approval/production'
             });
+
       - name: Wait for Platform Approval via Issue
         if: steps.check-environment.outputs.requires_approval == 'true'
         id: platform-approval
@@ -377,7 +386,7 @@ jobs:
           echo "🏗️ Creating platform approval request for PRODUCTION deployment..."
           
           REPO="${{ github.repository }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_NUMBER="${{ inputs.pr_number }}"
           
           # Get platform approver usernames from repository variables
           PLATFORM_APPROVER_1="${{ vars.PLATFORM_APPROVER_1 }}"
@@ -398,10 +407,10 @@ jobs:
           | Field | Value |
           |-------|-------|
           | **Environment** | 🔴 **PRODUCTION** |
-          | **Migration Type** | `tst → prd` |
-          | **Pull Request** | [#$PR_NUMBER](${{ github.event.pull_request.html_url }}) |
+          | **Migration Type** | \`tst → prd\` |
+          | **Pull Request** | [#$PR_NUMBER](https://github.com/${{ github.repository }}/pull/$PR_NUMBER) |
           | **Requested By** | @${{ github.actor }} |
-          | **Branch** | `${{ github.head_ref }}` → `${{ github.base_ref }}` |
+          | **Branch** | \`${{ inputs.head_ref }}\` → \`${{ inputs.base_ref }}\` |
           | **Workflow** | [View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
           
           ## ✅ Pre-Deployment Checks Status
@@ -460,6 +469,7 @@ jobs:
           
           The merge will be **blocked** until approval is granted by the platform team.
           **⚠️ Important:** If rejected, this PR will be automatically closed."
+
       - name: Poll for Platform Approval
         if: steps.check-environment.outputs.requires_approval == 'true'
         id: wait-platform-approval
@@ -471,7 +481,7 @@ jobs:
           
           REPO="${{ github.repository }}"
           ISSUE_NUMBER="${{ steps.platform-approval.outputs.issue_number }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_NUMBER="${{ inputs.pr_number }}"
           PLATFORM_APPROVER_1="${{ vars.PLATFORM_APPROVER_1 }}"
           PLATFORM_APPROVER_2="${{ vars.PLATFORM_APPROVER_2 }}"
           
@@ -547,6 +557,7 @@ jobs:
           echo "⏰ TIMEOUT: No response received within 24 hours"
           echo "approved=false" >> $GITHUB_OUTPUT
           echo "timeout=true" >> $GITHUB_OUTPUT
+
       - name: Update Status and Close Issue
         if: always() && steps.check-environment.outputs.requires_approval == 'true'
         env:
@@ -554,7 +565,7 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
           ISSUE_NUMBER="${{ steps.platform-approval.outputs.issue_number }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_NUMBER="${{ inputs.pr_number }}"
           
           # Generate professional status message
           CURRENT_TIME=$(date -u "+%A, %B %d, %Y at %H:%M UTC")
@@ -595,7 +606,7 @@ jobs:
           The platform approval requirement has been satisfied. The developer can now merge this PR. ✅"
             
             # Update commit status to success
-            gh api "repos/$REPO/statuses/${{ github.event.pull_request.head.sha }}" \
+            gh api "repos/$REPO/statuses/${{ inputs.head_sha }}" \
               -f state="success" \
               -f target_url="${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUMBER" \
               -f description="Production deployment approved by @$APPROVER" \
@@ -614,7 +625,6 @@ jobs:
           elif [[ "${{ steps.wait-platform-approval.outputs.rejected }}" == "true" ]]; then
             # Handle explicit rejection
             REJECTOR="${{ steps.wait-platform-approval.outputs.rejector }}"
-            REASON="Explicitly rejected by authorized platform team member"
             
             # Professional rejection message
             FINAL_COMMENT=$(cat <<EOF
@@ -641,7 +651,7 @@ jobs:
           )
             
             # Update commit status to failure
-            gh api "repos/$REPO/statuses/${{ github.event.pull_request.head.sha }}" \
+            gh api "repos/$REPO/statuses/${{ inputs.head_sha }}" \
               -f state="failure" \
               -f target_url="${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUMBER" \
               -f description="Production deployment rejected by @$REJECTOR - PR closed" \
@@ -660,8 +670,6 @@ jobs:
               
           else
             # Handle timeout
-            REASON="Request timed out after 24 hours with no response"
-            REJECTOR="System (Timeout)"
             
             # Professional timeout message
             FINAL_COMMENT=$(cat <<EOF
@@ -696,7 +704,7 @@ jobs:
           Please contact the platform team to expedite approval if this deployment is urgent. ⏰"
             
             # Update commit status to failure
-            gh api "repos/$REPO/statuses/${{ github.event.pull_request.head.sha }}" \
+            gh api "repos/$REPO/statuses/${{ inputs.head_sha }}" \
               -f state="failure" \
               -f target_url="${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUMBER" \
               -f description="Production deployment timeout - no response within 24h" \
@@ -715,6 +723,7 @@ jobs:
           
           # Add final comment to issue
           gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" -f body="$FINAL_COMMENT"
+
       - name: Set Platform Approval Status
         id: set-platform-status
         if: always()
@@ -728,6 +737,7 @@ jobs:
           else
             echo "status=timeout_or_failed" >> $GITHUB_OUTPUT
           fi
+
       - name: Block Merge if Platform Approval Required but Not Granted
         if: steps.check-environment.outputs.requires_approval == 'true' && steps.wait-platform-approval.outputs.approved != 'true'
         run: |
@@ -741,13 +751,14 @@ jobs:
           fi
           echo "🔴 This PR cannot be merged without platform approval"
           exit 1
+
 # ----------------------------------------------------------------------
 # 5. Deployment Pipeline - Runs after merge to target branches
 # ----------------------------------------------------------------------
   trigger-harness-pipeline:
     runs-on: ubuntu-latest
     if: |
-      github.event_name == 'push' &&                                 
+      inputs.event_name == 'push' &&                                 
       (github.ref == 'refs/heads/tst' || github.ref == 'refs/heads/prd')
     outputs:
       harness_status: ${{ steps.set-harness-status.outputs.status }}
@@ -764,6 +775,7 @@ jobs:
            
            # Get the merge commit PR number
            COMMIT_MSG=$(git log -1 --pretty=%B | head -1)
+           
            if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
              PR_NUMBER="${BASH_REMATCH[1]}"
              echo "🔗 Found PR: #$PR_NUMBER"
@@ -820,6 +832,7 @@ jobs:
            echo "code_security_status=$CODE_SECURITY_STATUS" >> $GITHUB_OUTPUT
            echo "codeowner_approval_status=$CODEOWNER_APPROVAL_STATUS" >> $GITHUB_OUTPUT
            echo "workflow_run_id=$WORKFLOW_ID" >> $GITHUB_OUTPUT
+
        - name: Determine migration configuration
          id: migration-config
          run: |
@@ -837,18 +850,21 @@ jobs:
           
            echo "🎯 Target branch: $BRANCH_NAME"
            echo "📦 Migration type: $(cat $GITHUB_OUTPUT | grep migration_type | cut -d'=' -f2)"
+
        - name: Get commit details
          id: commit-info
          run: |
            echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
            echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
            echo "commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+
        - name: Get PR details from merge commit
          id: pr-info
          run: |
            PR_NUMBER="${{ steps.check-pr-status.outputs.pr_number }}"
            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
            echo "pr_url=https://github.com/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
+
        - name: Trigger Harness Pipeline
          id: trigger-pipeline
          run: |
@@ -912,6 +928,7 @@ jobs:
              echo "Response: $RESPONSE_BODY"
              exit 1
            fi
+
        - name: Set Harness status
          id: set-harness-status
          if: always()
