@@ -1,0 +1,18 @@
+# app-repo/.github/workflows/branch-protection.yml
+name: Branch Protection (from mono repo)
+
+on:
+  pull_request:
+    branches: [tst, prd]
+    types: [opened, synchronize, ready_for_review, reopened]
+  push:
+    branches: [tst, prd]
+
+jobs:
+  branch-protection:
+    uses: aneesh-sayal-tkd/Airflow-migration-test/.github/workflows/branch-protection.yml@main
+    with:
+      TARGET_BRANCHES: "tst,prd"
+      SOURCE_BRANCHES: "dev,tst"
+    secrets:
+      HARNESS_WEBHOOK_URL: ${{ secrets.HARNESS_WEBHOOK_URL }}
